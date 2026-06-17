@@ -1,0 +1,177 @@
+// test/config.test.js — unit tests for src/config.js (normalize, validate, load).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+
+import {
+  normalizeConfig,
+  validateConfig,
+  loadConfig,
+  configExists,
+  DEFAULTS,
+  SOURCE_DEFAULTS,
+} from '../src/config.js';
+
+/** Create a unique temp file path inside the OS temp dir. */
+function tmpPath(suffix = '.json') {
+  return path.join(os.tmpdir(), `contextspin-test-${crypto.randomUUID()}${suffix}`);
+}
+
+test('DEFAULTS and SOURCE_DEFAULTS expose the documented shape', () => {
+  assert.equal(DEFAULTS.injection.mode, 'statusline');
+  assert.equal(DEFAULTS.injection.refresh, 30);
+  assert.equal(DEFAULTS.injection.maxVisible, 5);
+  assert.equal(DEFAULTS.snippets.deduplication, true);
+  assert.equal(DEFAULTS.snippets.cooldownAfterShown, 3);
+  assert.deepEqual(DEFAULTS.snippets.priorityOrder, []);
+  assert.equal(SOURCE_DEFAULTS.cooldown, 300);
+  assert.equal(SOURCE_DEFAULTS.maxSnippets, 2);
+});
+
+test('normalizeConfig fills injection/snippet defaults', () => {
+  const out = normalizeConfig({ sources: [{ type: 'cli', command: 'echo hi', format: '{{ value }}' }] });
+  assert.equal(out.injection.mode, 'statusline');
+  assert.equal(out.injection.refresh, 30);
+  assert.equal(out.injection.maxVisible, 5);
+  assert.equal(out.snippets.deduplication, true);
+  assert.equal(out.snippets.cooldownAfterShown, 3);
+});
+
+test('normalizeConfig assigns source.id as the index and applies source defaults', () => {
+  const out = normalizeConfig({
+    sources: [
+      { type: 'cli', command: 'echo a', format: '{{ value }}' },
+      { type: 'cli', command: 'echo b', format: '{{ value }}', cooldown: 10, maxSnippets: 9 },
+    ],
+  });
+  assert.equal(out.sources[0].id, 0);
+  assert.equal(out.sources[1].id, 1);
+  // defaults applied where missing
+  assert.equal(out.sources[0].cooldown, 300);
+  assert.equal(out.sources[0].maxSnippets, 2);
+  // explicit values preserved
+  assert.equal(out.sources[1].cooldown, 10);
+  assert.equal(out.sources[1].maxSnippets, 9);
+});
+
+test('normalizeConfig derives labels by source type', () => {
+  const out = normalizeConfig({
+    sources: [
+      { type: 'mcp', tool: 'slack_search_public', format: '{{ text }}' },
+      { type: 'cli', command: 'gh pr list --json title', format: '{{ title }}' },
+      { type: 'http', url: 'https://grafana.example.com/api/x?q=1', format: '{{ value }}' },
+    ],
+  });
+  assert.equal(out.sources[0].label, 'slack_search_public'); // mcp -> tool name
+  assert.equal(out.sources[1].label, 'gh'); // cli -> first whitespace token of command
+  assert.equal(out.sources[2].label, 'grafana.example.com'); // http -> hostname of url
+});
+
+test('normalizeConfig keeps an explicitly provided label', () => {
+  const out = normalizeConfig({
+    sources: [{ type: 'mcp', tool: 'slack_search_public', format: '{{ text }}', label: 'Slack' }],
+  });
+  assert.equal(out.sources[0].label, 'Slack');
+});
+
+test('normalizeConfig does not mutate its input', () => {
+  const raw = { sources: [{ type: 'cli', command: 'echo hi', format: '{{ value }}' }] };
+  const snapshot = JSON.parse(JSON.stringify(raw));
+  normalizeConfig(raw);
+  assert.deepEqual(raw, snapshot);
+});
+
+test('validateConfig throws when config is not an object', () => {
+  assert.throws(() => validateConfig(null));
+  assert.throws(() => validateConfig('nope'));
+});
+
+test('validateConfig throws when sources is missing or empty', () => {
+  assert.throws(() => validateConfig({ sources: [] }));
+  assert.throws(() => validateConfig({ injection: { mode: 'statusline' } }));
+});
+
+test('validateConfig throws on missing or invalid source type', () => {
+  assert.throws(() => validateConfig({ sources: [{ format: '{{ x }}' }] }));
+  assert.throws(() =>
+    validateConfig({ sources: [{ type: 'ftp', format: '{{ x }}' }] }),
+  );
+});
+
+test('validateConfig throws when required per-type fields are missing', () => {
+  assert.throws(() => validateConfig({ sources: [{ type: 'mcp', format: '{{ x }}' }] }));
+  assert.throws(() => validateConfig({ sources: [{ type: 'cli', format: '{{ x }}' }] }));
+  assert.throws(() => validateConfig({ sources: [{ type: 'http', format: '{{ x }}' }] }));
+});
+
+test('validateConfig throws when a source has no format', () => {
+  assert.throws(() => validateConfig({ sources: [{ type: 'cli', command: 'echo hi' }] }));
+});
+
+test('validateConfig throws on invalid injection.mode', () => {
+  assert.throws(() =>
+    validateConfig({
+      sources: [{ type: 'cli', command: 'echo hi', format: '{{ x }}' }],
+      injection: { mode: 'bogus' },
+    }),
+  );
+});
+
+test('validateConfig accepts a valid normalized config and returns it', () => {
+  const cfg = normalizeConfig({
+    sources: [{ type: 'cli', command: 'echo hi', format: '{{ value }}' }],
+  });
+  assert.equal(validateConfig(cfg), cfg);
+});
+
+test('loadConfig reads and normalizes a temp config file (explicit path arg)', async () => {
+  const p = tmpPath();
+  const raw = {
+    sources: [{ type: 'cli', command: 'gh pr list', format: 'PR {{ title }}' }],
+    injection: { mode: 'patcher' },
+  };
+  fs.writeFileSync(p, JSON.stringify(raw));
+  try {
+    const cfg = await loadConfig(p);
+    assert.equal(cfg.sources[0].id, 0);
+    assert.equal(cfg.sources[0].label, 'gh');
+    assert.equal(cfg.sources[0].cooldown, 300);
+    assert.equal(cfg.injection.mode, 'patcher');
+    assert.equal(cfg.injection.refresh, 30);
+  } finally {
+    fs.rmSync(p, { force: true });
+  }
+});
+
+test('loadConfig throws a setup hint when the config file is missing', async () => {
+  const p = tmpPath();
+  await assert.rejects(() => loadConfig(p), /contextspin setup/);
+});
+
+test('loadConfig wraps JSON parse errors with the path', async () => {
+  const p = tmpPath();
+  fs.writeFileSync(p, '{ not valid json ');
+  try {
+    await assert.rejects(() => loadConfig(p), (err) => {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes(p));
+      return true;
+    });
+  } finally {
+    fs.rmSync(p, { force: true });
+  }
+});
+
+test('configExists reflects file presence', () => {
+  const p = tmpPath();
+  assert.equal(configExists(p), false);
+  fs.writeFileSync(p, '{}');
+  try {
+    assert.equal(configExists(p), true);
+  } finally {
+    fs.rmSync(p, { force: true });
+  }
+});

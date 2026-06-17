@@ -1,0 +1,40 @@
+{
+  "name": "contextspin",
+  "version": "0.1.0",
+  "description": "Replace Claude Code spinner/statusline text with live org context (meetings, Slack, CI, incidents, PRs) aggregated from your existing MCP servers, CLIs, and HTTP endpoints.",
+  "type": "module",
+  "bin": {
+    "contextspin": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/cli.js",
+    "daemon": "node src/daemon-entry.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "optionalDependencies": {
+    "node-lief": "^1.0.0"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "statusline",
+    "spinner",
+    "mcp",
+    "devtools",
+    "cli",
+    "productivity"
+  ],
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    ".contextspin.example.json"
+  ]
+}

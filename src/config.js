@@ -37,6 +37,13 @@ export const STATUSLINE_SH = path.join(STATE_DIR, "statusline.sh");
 /** Path to the generated statusline Node render script. */
 export const STATUSLINE_JS = path.join(STATE_DIR, "statusline-render.js");
 
+/**
+ * Path to the recorded prior statusLine command (captured when we wrap an
+ * existing statusline so we can run it and prepend its output). Holds
+ * { command, type }. Removed on uninstall.
+ */
+export const PREV_STATUSLINE_PATH = path.join(STATE_DIR, "prev-statusline.json");
+
 /** Path to Claude Code's settings file (patched by the statusline injector). */
 export const CLAUDE_SETTINGS_PATH = path.join(HOME, ".claude", "settings.json");
 
@@ -125,6 +132,35 @@ export function normalizeConfig(raw) {
 }
 
 /**
+ * Build a complete default config object from a set of sources. Mirrors the
+ * shipped example config's injection/snippets shape (statusline mode, 30s
+ * refresh, 5 visible, dedup on, a sensible priority order). The result is a
+ * plain config (NOT normalized) — pass it through normalizeConfig before use.
+ *
+ * @param {Array<object>} sources - Source objects (e.g. from detectSources).
+ * @returns {object} A default config: { sources, injection, snippets }.
+ */
+export function defaultConfig(sources) {
+  return {
+    sources: Array.isArray(sources) ? sources : [],
+    injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
+    snippets: {
+      deduplication: true,
+      cooldownAfterShown: 3,
+      priorityOrder: [
+        "incident",
+        "ci",
+        "slack",
+        "calendar",
+        "github",
+        "gitlab",
+        "jira",
+      ],
+    },
+  };
+}
+
+/**
  * Validate a config (raw or normalized). Throws an Error with a clear message on
  * any problem; returns the same config object on success.
  *
@@ -135,8 +171,12 @@ export function validateConfig(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw new Error("Invalid config: expected a JSON object.");
   }
-  if (!Array.isArray(config.sources) || config.sources.length === 0) {
-    throw new Error('Invalid config: "sources" must be a non-empty array.');
+  // sources must be an array, but MAY be empty: a source-less config is valid —
+  // the daemon polls nothing and the injectors degrade to no snippets, which is
+  // the correct "installed but not configured yet" state (and lets `ensure`
+  // wire the statusline + start the daemon without a hard failure).
+  if (!Array.isArray(config.sources)) {
+    throw new Error('Invalid config: "sources" must be an array.');
   }
 
   config.sources.forEach((src, i) => {

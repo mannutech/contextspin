@@ -41,7 +41,10 @@ export async function readCache() {
  * @returns {Promise<void>}
  */
 export async function writeCache(state) {
-  const tmp = CACHE_PATH + ".tmp";
+  // Per-process temp name so the daemon and the statusline render script (which
+  // also writes the cache to bump shownCount) never share one .tmp and tear each
+  // other's writes. rename-onto-target stays atomic.
+  const tmp = CACHE_PATH + "." + process.pid + ".tmp";
   await fsp.writeFile(tmp, JSON.stringify(state, null, 2));
   await fsp.rename(tmp, CACHE_PATH);
 }

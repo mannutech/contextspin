@@ -11,6 +11,7 @@ import {
   validateConfig,
   loadConfig,
   configExists,
+  defaultConfig,
   DEFAULTS,
   SOURCE_DEFAULTS,
 } from '../src/config.js';
@@ -29,6 +30,40 @@ test('DEFAULTS and SOURCE_DEFAULTS expose the documented shape', () => {
   assert.deepEqual(DEFAULTS.snippets.priorityOrder, []);
   assert.equal(SOURCE_DEFAULTS.cooldown, 300);
   assert.equal(SOURCE_DEFAULTS.maxSnippets, 2);
+});
+
+test('defaultConfig returns the documented shape', () => {
+  const sources = [
+    { type: 'cli', command: 'echo hi', format: '{{ value }}', label: 'X' },
+  ];
+  const cfg = defaultConfig(sources);
+  assert.equal(cfg.sources, sources); // passes the array through by reference
+  assert.deepEqual(cfg.injection, { mode: 'statusline', refresh: 30, maxVisible: 5 });
+  assert.equal(cfg.snippets.deduplication, true);
+  assert.equal(cfg.snippets.cooldownAfterShown, 3);
+  assert.deepEqual(cfg.snippets.priorityOrder, [
+    'incident',
+    'ci',
+    'slack',
+    'calendar',
+    'github',
+    'gitlab',
+    'jira',
+  ]);
+});
+
+test('defaultConfig tolerates a non-array sources argument', () => {
+  assert.deepEqual(defaultConfig(undefined).sources, []);
+  assert.deepEqual(defaultConfig(null).sources, []);
+});
+
+test('defaultConfig output normalizes and validates', () => {
+  const cfg = normalizeConfig(
+    defaultConfig([{ type: 'cli', command: 'echo hi', format: '{{ value }}' }]),
+  );
+  assert.equal(validateConfig(cfg), cfg);
+  assert.equal(cfg.sources[0].id, 0);
+  assert.equal(cfg.injection.mode, 'statusline');
 });
 
 test('normalizeConfig fills injection/snippet defaults', () => {
@@ -89,9 +124,13 @@ test('validateConfig throws when config is not an object', () => {
   assert.throws(() => validateConfig('nope'));
 });
 
-test('validateConfig throws when sources is missing or empty', () => {
-  assert.throws(() => validateConfig({ sources: [] }));
+test('validateConfig requires sources to be an array, but allows it to be empty', () => {
+  // An empty sources array is valid — the daemon and injectors degrade to no
+  // snippets, so `ensure` can still wire the statusline and start the daemon.
+  assert.doesNotThrow(() => validateConfig({ sources: [] }));
+  // Missing or non-array sources is still invalid.
   assert.throws(() => validateConfig({ injection: { mode: 'statusline' } }));
+  assert.throws(() => validateConfig({ sources: 'nope' }));
 });
 
 test('validateConfig throws on missing or invalid source type', () => {

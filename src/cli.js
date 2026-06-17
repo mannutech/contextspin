@@ -2,7 +2,6 @@
 // src/cli.js — Commander-based command-line interface for ContextSpin.
 
 import fs from 'node:fs';
-import fsp from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import readline from 'node:readline/promises';
@@ -12,10 +11,13 @@ import { Command } from 'commander';
 
 import {
   CONFIG_PATH,
+  STATUSLINE_SH,
+  CLAUDE_SETTINGS_PATH,
   configExists,
   loadConfig,
   saveConfig,
   normalizeConfig,
+  defaultConfig,
 } from './config.js';
 import {
   startDaemonDetached,
@@ -25,6 +27,7 @@ import {
 } from './daemon.js';
 import { installStatusline, uninstallStatusline } from './inject/statusline.js';
 import { installPatcher, restorePatcher } from './inject/patcher.js';
+import { detectSources } from './detect.js';
 
 /** Absolute path to this module's directory. */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -91,27 +94,8 @@ function printSetupHint() {
 }
 
 /**
- * Write the bundled example config to the destination path. Confirms before
- * overwriting an existing file unless `force` is true.
- * @param {string} dest
- * @param {boolean} force
- * @returns {Promise<boolean>} true if written, false if skipped.
- */
-async function writeExampleConfig(dest, force) {
-  const examplePath = path.join(ROOT, '.contextspin.example.json');
-  const raw = await fsp.readFile(examplePath, 'utf8');
-  if (fs.existsSync(dest) && !force) {
-    console.log(`Config already exists at ${dest} (left unchanged).`);
-    return false;
-  }
-  await fsp.writeFile(dest, raw);
-  console.log(`Wrote example config to ${dest}`);
-  return true;
-}
-
-/**
- * Run the setup command: create a config either non-interactively (example
- * config) or via an interactive prompt that builds a minimal config.
+ * Run the setup command: create a config either non-interactively (a REAL
+ * config built from detected sources) or via an interactive prompt.
  * @param {{ yes?: boolean }} opts
  * @returns {Promise<void>}
  */
@@ -119,11 +103,13 @@ async function runSetup(opts = {}) {
   const interactive = process.stdin.isTTY && !opts.yes;
 
   if (!interactive) {
-    // Non-TTY or --yes: drop the example config unless one already exists.
+    // Non-TTY or --yes: write a real detected config unless one already exists.
     if (configExists()) {
       console.log(`Config already exists at ${CONFIG_PATH} (left unchanged).`);
     } else {
-      await writeExampleConfig(CONFIG_PATH, false);
+      const cfg = normalizeConfig(defaultConfig(await detectSources()));
+      await saveConfig(cfg, CONFIG_PATH);
+      console.log(`Wrote a detected config to ${CONFIG_PATH}`);
     }
     console.log('');
     console.log('Next steps:');
@@ -169,35 +155,21 @@ async function runSetup(opts = {}) {
       : 30;
 
     /** @type {Array<object>} */
-    const sources = [];
+    let sources = [];
     const seedAns = (
-      await rl.question('Seed a couple of safe starter sources? (Y/n) ')
+      await rl.question(
+        'Seed the safe starter sources detected for your environment? (Y/n) ',
+      )
     )
       .trim()
       .toLowerCase();
     if (seedAns !== 'n' && seedAns !== 'no') {
-      // Safe starters: read-only `gh` queries that do nothing harmful.
-      sources.push({
-        type: 'cli',
-        command: 'gh pr list --review-requested @me --json title,number --limit 3',
-        format: 'PR #{{ number }} needs your review: {{ title }}',
-        label: 'GitHub',
-        cooldown: 120,
-        maxSnippets: 3,
-      });
-      sources.push({
-        type: 'cli',
-        command: 'gh run list --json status,name,headBranch --limit 5',
-        filter: '{{ status }} == failure',
-        format: 'CI failing: {{ name }} on {{ headBranch }}',
-        label: 'CI',
-        cooldown: 60,
-        maxSnippets: 2,
-      });
+      // Read-only starters detected from the local environment (gh/glab).
+      sources = await detectSources();
     }
 
     const config = normalizeConfig({
-      sources,
+      ...defaultConfig(sources),
       injection: { mode, refresh },
     });
     await saveConfig(config, CONFIG_PATH);
@@ -208,6 +180,77 @@ async function runSetup(opts = {}) {
     console.log('  contextspin inject   # wire up your Claude Code status bar');
   } finally {
     rl.close();
+  }
+}
+
+/**
+ * Whether the Claude Code statusLine is already pointing at our wrapper.
+ * Best-effort: any read/parse/missing-file error -> false.
+ * @returns {boolean}
+ */
+function statuslineIsOurs() {
+  try {
+    if (!fs.existsSync(CLAUDE_SETTINGS_PATH)) return false;
+    const parsed = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
+    const sl = parsed && parsed.statusLine;
+    return !!(sl && typeof sl === 'object' && sl.command === STATUSLINE_SH);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The ENSURE flow: idempotent, non-interactive, safe to run every session
+ * (this is what the plugin SessionStart hook invokes). It:
+ *   (a) creates a detected config if none exists,
+ *   (b) wires the statusline if the mode is statusline/both and it is not
+ *       already pointing at our wrapper, and
+ *   (c) starts the daemon if it is not already running.
+ * Prints a concise one-line summary. Never throws on the normal paths; any
+ * error prints a clean line and the process still exits 0 (the hook depends on
+ * this — a non-zero exit would surface an error to the user every session).
+ * @returns {Promise<void>}
+ */
+async function runEnsure() {
+  /** @type {string[]} */
+  const did = [];
+  try {
+    let createdConfig = false;
+    if (!configExists()) {
+      const cfg = normalizeConfig(defaultConfig(await detectSources()));
+      await saveConfig(cfg, CONFIG_PATH);
+      createdConfig = true;
+      did.push('created config');
+    }
+
+    const config = await loadConfig();
+    const mode =
+      config && config.injection && config.injection.mode
+        ? config.injection.mode
+        : 'statusline';
+
+    if ((mode === 'statusline' || mode === 'both') && !statuslineIsOurs()) {
+      await installStatusline(config);
+      did.push('wired statusline');
+    }
+
+    if (!isDaemonRunning().running) {
+      startDaemonDetached();
+      did.push('started daemon');
+    }
+
+    if (did.length === 0) {
+      console.log('ContextSpin: already set up.');
+    } else {
+      console.log(
+        `ContextSpin: ${did.join(', ')}.` +
+          (createdConfig ? ` Edit ${CONFIG_PATH} to add your own sources.` : ''),
+      );
+    }
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    // Never break the session-start hook: report and exit 0.
+    console.log(`ContextSpin: setup skipped (${message}).`);
   }
 }
 
@@ -431,9 +474,16 @@ function buildProgram() {
 
   program
     .command('setup')
-    .description('Create a ContextSpin config (interactive, or --yes for example)')
-    .option('--yes', 'skip prompts and write the example config')
+    .description('Create a ContextSpin config (interactive, or --yes for a detected config)')
+    .option('--yes', 'skip prompts and write a detected config')
     .action(action(async (opts) => runSetup(opts)));
+
+  program
+    .command('ensure')
+    .description(
+      'One-shot, idempotent setup (create config + wire statusline + start daemon)',
+    )
+    .action(async () => runEnsure());
 
   program
     .command('start')

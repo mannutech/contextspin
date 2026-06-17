@@ -1,8 +1,0 @@
-{
-  "name": "contextspin-core",
-  "version": "0.1.1",
-  "description": "Core daemon and CLI for ContextSpin — polls org data sources and writes the snippet cache.",
-  "author": { "name": "mannutech" },
-  "homepage": "https://github.com/mannutech/contextspin",
-  "license": "MIT"
-}

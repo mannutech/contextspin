@@ -1,6 +1,6 @@
 {
   "name": "contextspin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Replace Claude Code spinner/statusline text with live org context (meetings, Slack, CI, incidents, PRs) aggregated from your existing MCP servers, CLIs, and HTTP endpoints.",
   "type": "module",
   "bin": {
@@ -33,7 +33,6 @@
   "license": "MIT",
   "files": [
     "src",
-    ".claude-plugin",
     "README.md",
     "LICENSE",
     ".contextspin.example.json"

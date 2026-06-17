@@ -1,12 +1,25 @@
 // src/inject/statusline.js — installs/uninstalls the Claude Code statusLine integration.
 // Generates a self-contained render script (always exits 0, buffers stdin) and
-// wires it into ~/.claude/settings.json under the camelCase `statusLine` key.
+// wires it into a Claude Code settings file under the camelCase `statusLine` key.
 //
-// NON-DESTRUCTIVE: if the user already has a statusLine command, we record it to
-// PREV_STATUSLINE_PATH and the generated render script RUNS that prior command
-// (piping Claude Code's stdin to it) and prints its output FIRST, then prints the
-// ContextSpin snippet on its own line beneath. The user's statusline is composed
-// with ours, never discarded.
+// SCOPE-AWARE + NON-DESTRUCTIVE:
+//
+//  - User scope (no project dir): we patch the user ~/.claude/settings.json.
+//  - Project scope (a projectDir is known, e.g. CLAUDE_PROJECT_DIR in a hook):
+//    we patch <projectDir>/.claude/settings.local.json. That file is gitignored
+//    and OUTRANKS the project's tracked .claude/settings.json — so a repo that
+//    ships its own statusLine in settings.json no longer SHADOWS ContextSpin.
+//
+//  - In either scope, if a statusLine command (other than ours) is currently
+//    effective, we record it in a PREV map (keyed by the absolute project dir,
+//    with "" reserved for the user scope) and the generated render script RUNS
+//    that prior command (piping Claude Code's stdin to it) and prints its output
+//    FIRST, then prints the ContextSpin snippet line on its own line beneath. The
+//    prior statusline is composed with ours, never discarded.
+//
+//  - The render script picks the prior PER PROJECT at render time: it parses the
+//    stdin payload for the project dir and looks the prior command up in the PREV
+//    map by that dir, falling back to the user ("") entry.
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -29,10 +42,13 @@ import {
  *  - Reads and BUFFERS all of stdin (Claude Code pipes a JSON payload). We must
  *    consume it so the writer never gets EPIPE; we also feed it to a wrapped
  *    prior statusline command (below).
- *  - If PREV_STATUSLINE_PATH exists and names a command, spawns that command via
- *    the shell, writes the buffered stdin to ITS stdin, captures its stdout with
- *    a short timeout (killed on timeout), and prints that output VERBATIM first
- *    (it may be multiple lines). Any failure here is swallowed.
+ *  - Tolerantly JSON-parses the buffered stdin to find the project dir (trying
+ *    workspace.project_dir, then workspace.current_dir, then cwd), then looks up
+ *    the prior command in the PREV map by that dir, falling back to the user ("")
+ *    entry. If a prior command is found, it spawns that command via the shell,
+ *    writes the buffered stdin to ITS stdin, captures its stdout with a 2000ms
+ *    timeout (SIGKILL on timeout), and prints that output VERBATIM first (it may
+ *    be multiple lines). Any failure here is swallowed.
  *  - Reads the cache (tolerating a missing file).
  *  - Reads `cooldownAfterShown` from the config (fallback 3).
  *  - Selects snippets where shownCount < cooldownAfterShown, picks the one with
@@ -43,13 +59,13 @@ import {
  *  - Wraps EVERYTHING so any error still exits 0 with whatever output succeeded
  *    (the prior statusline must never be lost and the bar must never break).
  *
- * The cache, config, and prev-statusline paths are baked into the script as
+ * The cache, config, and prev-statusline-map paths are baked into the script as
  * string literals so the generated file is fully self-contained with no imports
  * beyond node builtins.
  *
  * @param {string} cachePath - Absolute path to the snippet cache JSON file.
  * @param {string} configPath - Absolute path to the ContextSpin config JSON file.
- * @param {string} prevPath - Absolute path to the prev-statusline JSON file.
+ * @param {string} prevPath - Absolute path to the prev-statusline MAP JSON file.
  * @returns {string} The ESM source of the render script.
  */
 function buildRenderScript(cachePath, configPath, prevPath) {
@@ -57,8 +73,9 @@ function buildRenderScript(cachePath, configPath, prevPath) {
   const CONFIG = JSON.stringify(configPath);
   const PREV = JSON.stringify(prevPath);
   return `// contextspin statusline-render.js (generated) — composes any prior
-// statusline with one ContextSpin snippet line. MUST always exit 0 and never
-// lose the prior statusline's output, so the user's status bar never breaks.
+// statusline (looked up per-project) with one ContextSpin snippet line. MUST
+// always exit 0 and never lose the prior statusline's output, so the user's
+// status bar never breaks.
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 
@@ -94,20 +111,75 @@ function readStdin() {
 }
 
 /**
+ * Tolerantly parse the buffered stdin payload for the project dir. Tries
+ * workspace.project_dir, then workspace.current_dir, then cwd. Returns "" on any
+ * failure (which falls back to the user-scope prev entry).
+ */
+function projectDirFromStdin(stdinBuf) {
+  try {
+    const payload = JSON.parse(stdinBuf.toString("utf8"));
+    const ws = payload && typeof payload.workspace === "object" ? payload.workspace : {};
+    const dir =
+      (ws && ws.project_dir) ||
+      (ws && ws.current_dir) ||
+      (payload && payload.cwd) ||
+      "";
+    return typeof dir === "string" ? dir : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Read the prev-statusline MAP (keyed by absolute project dir, with "" for the
+ * user scope). Tolerates a missing/old file. An OLD single-object file (one with
+ * a top-level \`command\` field) is migrated in-memory to the "" (user) entry.
+ * Returns an object map (possibly empty); never throws.
+ */
+function readPrevMap() {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(PREV_STATUSLINE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+  if (!raw || typeof raw !== "object") return {};
+  // Migrate an old single-object record to the user ("") entry.
+  if (typeof raw.command === "string") {
+    return { "": { command: raw.command, type: raw.type || "command" } };
+  }
+  return raw;
+}
+
+/**
+ * Resolve the prior statusline command for a given project dir from the map,
+ * falling back to the user ("") entry. Returns "" when none is recorded.
+ */
+function priorCommandFor(projectDir) {
+  const map = readPrevMap();
+  // Try the raw dir, then its realpath (the install side keys by realpath, so a
+  // symlinked root still matches), then fall back to the user ("") entry.
+  const candidates = [];
+  if (projectDir) {
+    candidates.push(projectDir);
+    try { candidates.push(fs.realpathSync(projectDir)); } catch {}
+  }
+  candidates.push("");
+  for (const k of candidates) {
+    const entry = map[k];
+    if (entry && typeof entry === "object" && typeof entry.command === "string") {
+      return entry.command;
+    }
+  }
+  return "";
+}
+
+/**
  * Run the recorded prior statusline command, feeding it the buffered stdin, and
  * resolve with its captured stdout (string). Swallows every failure -> "".
  */
-function runPrevStatusline(stdinBuf) {
+function runPrevStatusline(command, stdinBuf) {
   return new Promise((resolve) => {
-    let prev;
-    try {
-      const raw = fs.readFileSync(PREV_STATUSLINE_PATH, "utf8");
-      prev = JSON.parse(raw);
-    } catch {
-      resolve("");
-      return;
-    }
-    const command = prev && typeof prev.command === "string" ? prev.command : "";
     if (!command) {
       resolve("");
       return;
@@ -231,10 +303,13 @@ function writeOut(text) {
 async function main() {
   const stdinBuf = await readStdin();
 
-  // (a) Prior statusline output FIRST (verbatim, possibly multi-line).
+  // (a) Prior statusline output FIRST (verbatim, possibly multi-line), looked up
+  // per-project from the PREV map.
   let prevOut = "";
   try {
-    prevOut = await runPrevStatusline(stdinBuf);
+    const projectDir = projectDirFromStdin(stdinBuf);
+    const command = priorCommandFor(projectDir);
+    prevOut = await runPrevStatusline(command, stdinBuf);
   } catch {
     prevOut = "";
   }
@@ -280,6 +355,20 @@ async function readJsonSafe(filePath, fallback) {
 }
 
 /**
+ * Synchronous JSON read returning a fallback on any read/parse error.
+ * @param {string} filePath
+ * @param {*} fallback
+ * @returns {*}
+ */
+function readJsonSafeSync(filePath, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Atomically write a pretty-printed JSON file (write tmp then rename).
  * @param {string} filePath
  * @param {*} data
@@ -292,10 +381,63 @@ async function writeJsonAtomic(filePath, data) {
 }
 
 /**
+ * Read the prev-statusline MAP from disk: an object keyed by absolute project
+ * dir (with "" reserved for the user scope), each value { command, type }.
+ *
+ * Tolerates a missing/unparseable file (-> {}). Migrates an OLD single-object
+ * file (one with a top-level `command` field) by treating it as the "" (user)
+ * entry. Never throws.
+ *
+ * @returns {Record<string, {command: string, type: string}>}
+ */
+function readPrevMap() {
+  const raw = readJsonSafeSync(PREV_STATUSLINE_PATH, null);
+  if (!raw || typeof raw !== "object") return {};
+  // Migrate an old single-object record to the user ("") entry.
+  if (typeof raw.command === "string") {
+    return { "": { command: raw.command, type: raw.type || "command" } };
+  }
+  return raw;
+}
+
+/**
+ * Persist the prev-statusline MAP atomically.
+ * @param {Record<string, {command: string, type: string}>} map
+ * @returns {Promise<void>}
+ */
+async function writePrevMap(map) {
+  await writeJsonAtomic(PREV_STATUSLINE_PATH, map);
+}
+
+/**
+ * Resolve the statusLine command currently configured in a settings file (if
+ * any), ignoring our own wrapper. Returns null when the file has no usable
+ * non-ours statusLine command.
+ *
+ * @param {string} settingsPath
+ * @returns {{command: string, type: string}|null}
+ */
+function priorFromSettings(settingsPath) {
+  const settings = readJsonSafeSync(settingsPath, null);
+  const sl = settings && typeof settings === "object" ? settings.statusLine : null;
+  if (
+    sl &&
+    typeof sl === "object" &&
+    typeof sl.command === "string" &&
+    sl.command &&
+    sl.command !== STATUSLINE_SH
+  ) {
+    return { command: sl.command, type: sl.type || "command" };
+  }
+  return null;
+}
+
+/**
  * @typedef {Object} InstallStatuslineResult
  * @property {string} statuslineSh - Path to the generated bash wrapper.
  * @property {string} statuslineJs - Path to the generated Node render script.
  * @property {string} settingsPath - Path to the patched Claude settings file.
+ * @property {"project"|"user"} scope - Whether we wrote project or user settings.
  * @property {boolean} backedUp - Whether an existing statusLine was backed up.
  * @property {boolean} composed - Whether we wrapped an existing statusline
  *   (its output is composed above the ContextSpin line).
@@ -303,81 +445,120 @@ async function writeJsonAtomic(filePath, data) {
  */
 
 /**
- * Install the ContextSpin statusline integration (NON-DESTRUCTIVE):
- *  - Writes the self-contained render script to STATUSLINE_JS.
- *  - Writes an executable bash wrapper to STATUSLINE_SH that execs the render
- *    script with stderr silenced.
- *  - If an existing statusLine command (other than ours) is present, RECORDS it
- *    to PREV_STATUSLINE_PATH (once — idempotent; never captures our own command)
- *    so the render script can run it and prepend its output. Also backs up
- *    settings.json to the .contextspin.bak once, as before.
- *  - Patches ~/.claude/settings.json so `statusLine` points at our wrapper, with
- *    `refreshInterval` in SECONDS (from config.injection.refresh).
+ * Install the ContextSpin statusline integration (SCOPE-AWARE, NON-DESTRUCTIVE).
+ *
+ * TARGET settings file + PREV map KEY:
+ *  - If opts.projectDir is set: TARGET = <projectDir>/.claude/settings.local.json
+ *    (gitignored, outranks the tracked settings.json); KEY = the resolved
+ *    absolute projectDir.
+ *  - Else: TARGET = the user ~/.claude/settings.json; KEY = "" (user scope).
+ *
+ * PRIOR detection (the statusline currently effective and NOT ours, to compose):
+ *  - If projectDir set: the project's tracked .claude/settings.json statusLine if
+ *    present and not ours; else the user settings.json statusLine if not ours;
+ *    else none.
+ *  - Else: the user settings.json statusLine if present and not ours; else none.
+ * We never treat our own STATUSLINE_SH as a prior, and record the detected prior
+ * into the PREV map under KEY (refreshing it if it differs).
  *
  * @param {object} config - Normalized ContextSpin config (uses injection.refresh).
+ * @param {{ projectDir?: string }} [opts]
  * @returns {Promise<InstallStatuslineResult>}
  */
-export async function installStatusline(config) {
+export async function installStatusline(config, opts = {}) {
   await fsp.mkdir(STATE_DIR, { recursive: true });
 
-  // (1) Patch Claude settings — first detect/record any existing statusline so
-  // the generated render script can compose it. (We read settings before
-  // writing the render script so a re-run never captures our own command.)
-  await fsp.mkdir(path.dirname(CLAUDE_SETTINGS_PATH), { recursive: true });
-  const settings = await readJsonSafe(CLAUDE_SETTINGS_PATH, {});
-  const settingsObj = settings && typeof settings === "object" ? settings : {};
-
-  let backedUp = false;
-  let composed = false;
-  let warning = null;
-
-  const existing = settingsObj.statusLine;
-  if (
-    existing &&
-    typeof existing === "object" &&
-    existing.command &&
-    existing.command !== STATUSLINE_SH
-  ) {
-    // NON-DESTRUCTIVE: record the prior command so we run it and prepend its
-    // output. We're inside the `existing.command !== STATUSLINE_SH` branch, so
-    // this never records our own wrapper. Refresh the record if the prior
-    // command changed out-of-band (otherwise a stale prior would keep running).
-    let recordedPrev = null;
+  // Canonicalize with realpath so the PREV-map key matches whatever the render
+  // script derives from Claude Code's stdin (symlinked roots like macOS /var vs
+  // /private/var would otherwise diverge). Fall back to path.resolve if realpath
+  // throws (e.g. the dir does not exist yet).
+  let projectDir = null;
+  if (opts && typeof opts.projectDir === "string" && opts.projectDir) {
     try {
-      recordedPrev = JSON.parse(fs.readFileSync(PREV_STATUSLINE_PATH, "utf8"));
+      projectDir = fs.realpathSync(opts.projectDir);
     } catch {
-      recordedPrev = null;
+      projectDir = path.resolve(opts.projectDir);
     }
-    if (!recordedPrev || recordedPrev.command !== String(existing.command)) {
-      await writeJsonAtomic(PREV_STATUSLINE_PATH, {
-        command: String(existing.command),
-        type: existing.type || "command",
-      });
-    }
-    composed = true;
-
-    const backupPath = CLAUDE_SETTINGS_PATH + ".contextspin.bak";
-    if (!fs.existsSync(backupPath)) {
-      await fsp.copyFile(CLAUDE_SETTINGS_PATH, backupPath);
-      backedUp = true;
-    }
-    warning =
-      `Existing statusLine command (\`${existing.command}\`) is preserved: ` +
-      `ContextSpin runs it and shows its output above the ContextSpin line. ` +
-      `A backup of your settings is at ${backupPath}. Run \`contextspin uninject\` to restore it.`;
-  } else if (existing && typeof existing === "object" && existing.command === STATUSLINE_SH) {
-    // Already ours: a prior command may have been recorded on a previous run.
-    composed = fs.existsSync(PREV_STATUSLINE_PATH);
   }
 
-  // (2) Render script (now knows the prev-statusline path).
+  // Resolve TARGET settings file + PREV-map KEY by scope.
+  const scope = projectDir ? "project" : "user";
+  const targetPath = projectDir
+    ? path.join(projectDir, ".claude", "settings.local.json")
+    : CLAUDE_SETTINGS_PATH;
+  const key = projectDir || "";
+
+  // (1) PRIOR detection. We look at the *currently effective* non-ours
+  // statusLine so the render script can compose it.
+  let prior = null;
+  if (projectDir) {
+    // The tracked project settings.json (which currently shadows us), then fall
+    // back to the user settings.json.
+    prior =
+      priorFromSettings(path.join(projectDir, ".claude", "settings.json")) ||
+      priorFromSettings(CLAUDE_SETTINGS_PATH);
+  } else {
+    prior = priorFromSettings(CLAUDE_SETTINGS_PATH);
+  }
+
+  // (2) Record the prior into the PREV map under KEY. Refresh the entry if it
+  // differs; never record our own STATUSLINE_SH (priorFromSettings already
+  // excludes it). When there is no prior, drop any stale entry for this KEY.
+  const map = readPrevMap();
+  let composed = false;
+  if (prior && prior.command && prior.command !== STATUSLINE_SH) {
+    // Detected a real prior at this scope -> record/refresh it, so a repo that
+    // later changes its own statusLine is picked up on the next `ensure`.
+    map[key] = { command: prior.command, type: prior.type || "command" };
+    composed = true;
+  } else if (scope === "project") {
+    // Project priors come from the TRACKED settings.json, which we never write,
+    // so "no prior" means the repo genuinely has no statusLine -> drop any stale
+    // entry rather than keep running a command the repo has since removed.
+    if (map[key]) delete map[key];
+    composed = false;
+  } else {
+    // User scope: the prior source IS the file we overwrite with our wrapper, so
+    // "no prior" usually just means our wrapper is already installed. Keep any
+    // previously-recorded original prior.
+    composed = !!(map[key] && map[key].command);
+  }
+  await writePrevMap(map);
+
+  // (3) Render script (knows the prev-statusline MAP path) + bash wrapper.
   const renderSource = buildRenderScript(CACHE_PATH, CONFIG_PATH, PREV_STATUSLINE_PATH);
   await fsp.writeFile(STATUSLINE_JS, renderSource);
 
-  // (3) Bash wrapper. Silence stderr so node warnings never reach the status bar.
+  // Silence stderr so node warnings never reach the status bar.
   const shSource = `#!/usr/bin/env bash\nexec node ${JSON.stringify(STATUSLINE_JS)} 2>/dev/null\n`;
   await fsp.writeFile(STATUSLINE_SH, shSource);
   await fsp.chmod(STATUSLINE_SH, 0o755);
+
+  // (4) JSON-MERGE our statusLine into TARGET, preserving every other key.
+  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  const targetExisted = fs.existsSync(targetPath);
+  const settings = await readJsonSafe(targetPath, {});
+  const settingsObj = settings && typeof settings === "object" ? settings : {};
+
+  let backedUp = false;
+  let warning = null;
+
+  // If TARGET already held a non-ours statusLine, back it up once.
+  const targetExisting = settingsObj.statusLine;
+  if (
+    targetExisted &&
+    targetExisting &&
+    typeof targetExisting === "object" &&
+    typeof targetExisting.command === "string" &&
+    targetExisting.command &&
+    targetExisting.command !== STATUSLINE_SH
+  ) {
+    const backupPath = targetPath + ".contextspin.bak";
+    if (!fs.existsSync(backupPath)) {
+      await fsp.copyFile(targetPath, backupPath);
+      backedUp = true;
+    }
+  }
 
   const refresh =
     config && config.injection && typeof config.injection.refresh === "number"
@@ -391,12 +572,24 @@ export async function installStatusline(config) {
     refreshInterval: refresh, // SECONDS
   };
 
-  await writeJsonAtomic(CLAUDE_SETTINGS_PATH, settingsObj);
+  await writeJsonAtomic(targetPath, settingsObj);
+
+  if (composed) {
+    const priorCmd = prior ? prior.command : (map[key] && map[key].command);
+    warning =
+      `Existing statusLine command (\`${priorCmd}\`) is preserved: ` +
+      `ContextSpin runs it and shows its output above the ContextSpin line. ` +
+      (scope === "project"
+        ? `Wired into ${targetPath} (gitignored; outranks the tracked settings.json). `
+        : ``) +
+      `Run \`contextspin uninject\` to restore it.`;
+  }
 
   return {
     statuslineSh: STATUSLINE_SH,
     statuslineJs: STATUSLINE_JS,
-    settingsPath: CLAUDE_SETTINGS_PATH,
+    settingsPath: targetPath,
+    scope,
     backedUp,
     composed,
     warning,
@@ -407,34 +600,75 @@ export async function installStatusline(config) {
  * @typedef {Object} UninstallStatuslineResult
  * @property {boolean} removed - Whether our statusLine entry was removed.
  * @property {boolean} restored - Whether settings were restored from backup.
- * @property {string} settingsPath - Path to the Claude settings file.
+ * @property {string} settingsPath - Path to the Claude settings file operated on.
+ * @property {"project"|"user"} scope - Which scope was operated on.
  * @property {string|null} note - Human-readable note, or null.
  */
 
-/** Best-effort removal of the recorded prev-statusline file. */
-async function removePrevStatusline() {
+/**
+ * Remove a scope's entry from the prev-statusline MAP (best-effort). When the
+ * map becomes empty the file is removed; otherwise it is rewritten.
+ * @param {string} key - The PREV-map key ("" for user scope, else absolute dir).
+ * @returns {Promise<void>}
+ */
+async function removePrevEntry(key) {
   try {
-    await fsp.unlink(PREV_STATUSLINE_PATH);
+    const map = readPrevMap();
+    if (Object.prototype.hasOwnProperty.call(map, key)) {
+      delete map[key];
+    }
+    if (Object.keys(map).length === 0) {
+      await fsp.unlink(PREV_STATUSLINE_PATH).catch(() => {});
+    } else {
+      await writePrevMap(map);
+    }
   } catch {
-    // best effort (may not exist)
+    // best effort
   }
 }
 
 /**
- * Uninstall the ContextSpin statusline integration. If the current
- * `statusLine.command` is ours, restore the `.contextspin.bak` backup when
- * present (which brings back the prior command), otherwise just drop the
- * `statusLine` key. Always removes the recorded prev-statusline file.
+ * Uninstall the ContextSpin statusline integration (SCOPE-AWARE reverse).
  *
+ *  - Project scope (opts.projectDir set): operate on
+ *    <projectDir>/.claude/settings.local.json. If a `.contextspin.bak` exists,
+ *    restore it; else JSON-merge to delete just the `statusLine` key (preserving
+ *    other keys). Remove that project's entry from the PREV map.
+ *  - User scope: operate on the user ~/.claude/settings.json the same way and
+ *    remove the "" (user) PREV entry.
+ *
+ * @param {{ projectDir?: string }} [opts]
  * @returns {Promise<UninstallStatuslineResult>}
  */
-export async function uninstallStatusline() {
-  const settings = await readJsonSafe(CLAUDE_SETTINGS_PATH, null);
+export async function uninstallStatusline(opts = {}) {
+  // Canonicalize with realpath so the PREV-map key matches whatever the render
+  // script derives from Claude Code's stdin (symlinked roots like macOS /var vs
+  // /private/var would otherwise diverge). Fall back to path.resolve if realpath
+  // throws (e.g. the dir does not exist yet).
+  let projectDir = null;
+  if (opts && typeof opts.projectDir === "string" && opts.projectDir) {
+    try {
+      projectDir = fs.realpathSync(opts.projectDir);
+    } catch {
+      projectDir = path.resolve(opts.projectDir);
+    }
+  }
+
+  const scope = projectDir ? "project" : "user";
+  const targetPath = projectDir
+    ? path.join(projectDir, ".claude", "settings.local.json")
+    : CLAUDE_SETTINGS_PATH;
+  const key = projectDir || "";
+
+  const settings = await readJsonSafe(targetPath, null);
   if (!settings || typeof settings !== "object") {
+    // Nothing in TARGET, but still drop any recorded prev entry for this scope.
+    await removePrevEntry(key);
     return {
       removed: false,
       restored: false,
-      settingsPath: CLAUDE_SETTINGS_PATH,
+      settingsPath: targetPath,
+      scope,
       note: "No Claude settings file found; nothing to uninstall.",
     };
   }
@@ -444,41 +678,46 @@ export async function uninstallStatusline() {
     current && typeof current === "object" && current.command === STATUSLINE_SH;
 
   if (!isOurs) {
+    await removePrevEntry(key);
     return {
       removed: false,
       restored: false,
-      settingsPath: CLAUDE_SETTINGS_PATH,
+      settingsPath: targetPath,
+      scope,
       note: "statusLine is not managed by ContextSpin; left unchanged.",
     };
   }
 
-  const backupPath = CLAUDE_SETTINGS_PATH + ".contextspin.bak";
+  const backupPath = targetPath + ".contextspin.bak";
   if (fs.existsSync(backupPath)) {
     const backup = await readJsonSafe(backupPath, null);
     if (backup && typeof backup === "object") {
-      await writeJsonAtomic(CLAUDE_SETTINGS_PATH, backup);
+      await writeJsonAtomic(targetPath, backup);
       try {
         await fsp.unlink(backupPath);
       } catch {
         // best effort
       }
-      await removePrevStatusline();
+      await removePrevEntry(key);
       return {
         removed: true,
         restored: true,
-        settingsPath: CLAUDE_SETTINGS_PATH,
+        settingsPath: targetPath,
+        scope,
         note: "Restored previous Claude settings from backup.",
       };
     }
   }
 
+  // No backup: JSON-merge to delete just our statusLine key (preserve the rest).
   delete settings.statusLine;
-  await writeJsonAtomic(CLAUDE_SETTINGS_PATH, settings);
-  await removePrevStatusline();
+  await writeJsonAtomic(targetPath, settings);
+  await removePrevEntry(key);
   return {
     removed: true,
     restored: false,
-    settingsPath: CLAUDE_SETTINGS_PATH,
+    settingsPath: targetPath,
+    scope,
     note: "Removed the ContextSpin statusLine entry.",
   };
 }

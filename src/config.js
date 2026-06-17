@@ -38,9 +38,12 @@ export const STATUSLINE_SH = path.join(STATE_DIR, "statusline.sh");
 export const STATUSLINE_JS = path.join(STATE_DIR, "statusline-render.js");
 
 /**
- * Path to the recorded prior statusLine command (captured when we wrap an
- * existing statusline so we can run it and prepend its output). Holds
- * { command, type }. Removed on uninstall.
+ * Path to the recorded prior statusLine commands (captured when we wrap an
+ * existing statusline so we can run it and prepend its output). Holds a MAP
+ * keyed by absolute project dir (with "" reserved for the user/no-project
+ * scope); each value is { command, type }. An old single-object file (with a
+ * top-level `command` field) is migrated to the "" entry on read. Entries are
+ * removed per-scope on uninstall.
  */
 export const PREV_STATUSLINE_PATH = path.join(STATE_DIR, "prev-statusline.json");
 
@@ -148,6 +151,7 @@ export function defaultConfig(sources) {
       deduplication: true,
       cooldownAfterShown: 3,
       priorityOrder: [
+        "review",
         "incident",
         "ci",
         "slack",

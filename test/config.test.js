@@ -42,6 +42,7 @@ test('defaultConfig returns the documented shape', () => {
   assert.equal(cfg.snippets.deduplication, true);
   assert.equal(cfg.snippets.cooldownAfterShown, 3);
   assert.deepEqual(cfg.snippets.priorityOrder, [
+    'review',
     'incident',
     'ci',
     'slack',

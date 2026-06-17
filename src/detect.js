@@ -1,24 +1,23 @@
-// src/detect.js — best-effort, zero-network detection of safe starter sources.
+// src/detect.js — best-effort, zero-network detection of the single starter source.
 //
-// Detection heuristics (all local, no secrets, no network):
-//   - We probe PATH for the `gh` (GitHub CLI), `glab` (GitLab CLI), and
-//     `kubectl` binaries using a short, swallowed child-process check
-//     (`<tool> --version`). Anything that errors, times out, or exits non-zero
-//     is treated as "not present".
-//   - If `gh` is present we seed two GitHub sources: PRs that requested your
-//     review, and failing CI runs.
-//   - Else if `glab` is present we seed the GitLab equivalents.
-//   - If NEITHER `gh` nor `glab` is present we still return the `gh` pair as a
-//     sensible placeholder. cli sources fail gracefully per-source in the
-//     daemon runner, so a missing binary just yields no snippets rather than
-//     breaking anything — and the config is then a working template the user
-//     can edit.
-//   - `kubectl` is probed for future use / informational purposes; we do not
-//     seed a kubectl source today because a safe, universally-meaningful
-//     read-only query is cluster-specific.
+// ContextSpin has ONE job: show "review requests waiting on you" — the PRs/MRs
+// where you are the requested reviewer — in the Claude Code statusline. We seed
+// exactly one source for that, using whichever code-host CLI is already on PATH
+// (and already authenticated), so there is zero token/secret setup.
 //
-// All format/filter strings use the double-curly-brace token syntax understood
-// by src/formatter.js. Returned source objects have NO `id` — normalizeConfig
+// Detection heuristic (all local, no secrets, no network):
+//   - We probe PATH for the `gh` (GitHub CLI) and `glab` (GitLab CLI) binaries
+//     using a short, swallowed child-process check (`<tool> --version`). Anything
+//     that errors, times out, or exits non-zero is treated as "not present".
+//   - If `gh` is present we seed the GitHub "review requested of you" source.
+//   - Else if `glab` is present we seed the GitLab equivalent.
+//   - If NEITHER is present we still return the `gh` source as a graceful
+//     placeholder. cli sources fail gracefully per-source in the daemon runner,
+//     so a missing binary just yields no snippets rather than breaking anything —
+//     and the config is then a working template the user can edit.
+//
+// All format strings use the double-curly-brace token syntax understood by
+// src/formatter.js. The returned source object has NO `id` — normalizeConfig
 // assigns ids by index.
 
 import { spawn } from "node:child_process";
@@ -67,58 +66,37 @@ function hasBinary(tool, timeoutMs = 2000) {
   });
 }
 
-/** The GitHub starter pair (PRs needing review + failing CI). */
-function ghSources() {
-  return [
-    {
-      type: "cli",
-      command:
-        "gh pr list --review-requested @me --json title,number --limit 3",
-      format: "PR #{{ number }} needs review: {{ title }}",
-      label: "GitHub",
-      cooldown: 120,
-      maxSnippets: 3,
-    },
-    {
-      type: "cli",
-      command: "gh run list --json status,name,headBranch --limit 5",
-      filter: "{{ status }} == failure",
-      format: "CI failing: {{ name }} on {{ headBranch }}",
-      label: "CI",
-      cooldown: 60,
-      maxSnippets: 2,
-    },
-  ];
+/** The GitHub "review requests waiting on you" source. */
+function ghSource() {
+  return {
+    type: "cli",
+    command: "gh pr list --review-requested @me --json number,title --limit 5",
+    format: "👀 review #{{ number }}: {{ title }}",
+    label: "review",
+    cooldown: 120,
+    maxSnippets: 3,
+  };
 }
 
-/** The GitLab starter pair (MRs needing review + failing CI). */
-function glabSources() {
-  return [
-    {
-      type: "cli",
-      command: "glab mr list --reviewer=@me --output json --per-page 3",
-      format: "MR !{{ iid }} needs review: {{ title }}",
-      label: "GitLab",
-      cooldown: 120,
-      maxSnippets: 3,
-    },
-    {
-      type: "cli",
-      command: "glab ci list --status failed --output json --per-page 5",
-      format: "CI failed: {{ ref }} (#{{ id }})",
-      label: "CI",
-      cooldown: 60,
-      maxSnippets: 2,
-    },
-  ];
+/** The GitLab "review requests waiting on you" source. */
+function glabSource() {
+  return {
+    type: "cli",
+    command: "glab mr list --reviewer=@me --output json --per-page 5",
+    format: "👀 review !{{ iid }}: {{ title }}",
+    label: "review",
+    cooldown: 120,
+    maxSnippets: 3,
+  };
 }
 
 /**
- * Detect a set of safe, read-only starter sources from the local environment.
+ * Detect the single safe, read-only starter source from the local environment.
  *
  * Best-effort and side-effect-free beyond local `<tool> --version` probes (no
- * network). See the file header for the detection heuristics. Always returns a
- * non-empty array of source objects WITHOUT ids (normalizeConfig assigns ids).
+ * network). See the file header for the detection heuristic. Always returns a
+ * non-empty array holding exactly one source object WITHOUT an id
+ * (normalizeConfig assigns ids).
  *
  * @param {{ timeoutMs?: number }} [opts]
  * @returns {Promise<Array<object>>}
@@ -126,19 +104,18 @@ function glabSources() {
 export async function detectSources(opts = {}) {
   const timeoutMs = opts.timeoutMs;
 
-  // Probe the three tools in parallel; each probe swallows its own failures.
-  const [gh, glab /*, kubectl */] = await Promise.all([
+  // Probe both CLIs in parallel; each probe swallows its own failures.
+  const [gh, glab] = await Promise.all([
     hasBinary("gh", timeoutMs),
     hasBinary("glab", timeoutMs),
-    hasBinary("kubectl", timeoutMs),
   ]);
 
-  if (gh) return ghSources();
-  if (glab) return glabSources();
+  if (gh) return [ghSource()];
+  if (glab) return [glabSource()];
 
-  // Neither present: return the gh pair as a sensible, gracefully-failing
+  // Neither present: return the gh source as a graceful, gracefully-failing
   // placeholder the user can edit.
-  return ghSources();
+  return [ghSource()];
 }
 
 export default detectSources;

@@ -184,14 +184,29 @@ async function runSetup(opts = {}) {
 }
 
 /**
- * Whether the Claude Code statusLine is already pointing at our wrapper.
- * Best-effort: any read/parse/missing-file error -> false.
+ * The TARGET Claude settings file for a given scope: the project's gitignored
+ * settings.local.json when a projectDir is known, else the user settings.json.
+ * @param {string|undefined} projectDir
+ * @returns {string}
+ */
+function targetSettingsPath(projectDir) {
+  if (projectDir) {
+    return path.join(path.resolve(projectDir), '.claude', 'settings.local.json');
+  }
+  return CLAUDE_SETTINGS_PATH;
+}
+
+/**
+ * Whether the statusLine in the scope's TARGET settings file already points at
+ * our wrapper. Best-effort: any read/parse/missing-file error -> false.
+ * @param {string|undefined} projectDir - Project scope dir, or undefined for user scope.
  * @returns {boolean}
  */
-function statuslineIsOurs() {
+function statuslineIsOurs(projectDir) {
   try {
-    if (!fs.existsSync(CLAUDE_SETTINGS_PATH)) return false;
-    const parsed = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
+    const target = targetSettingsPath(projectDir);
+    if (!fs.existsSync(target)) return false;
+    const parsed = JSON.parse(fs.readFileSync(target, 'utf8'));
     const sl = parsed && parsed.statusLine;
     return !!(sl && typeof sl === 'object' && sl.command === STATUSLINE_SH);
   } catch {
@@ -229,9 +244,19 @@ async function runEnsure() {
         ? config.injection.mode
         : 'statusline';
 
-    if ((mode === 'statusline' || mode === 'both') && !statuslineIsOurs()) {
-      await installStatusline(config);
-      did.push('wired statusline');
+    // Claude Code sets CLAUDE_PROJECT_DIR in hooks. When present we wire the
+    // scope-aware project settings.local.json (which outranks a repo's tracked
+    // statusLine); when absent we stay in user scope and do NOT guess from cwd.
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || undefined;
+
+    if (mode === 'statusline' || mode === 'both') {
+      // Always (re-)install: installStatusline is idempotent for the settings
+      // write, and re-running it every session refreshes the composed prior so a
+      // repo that later changes its own statusLine gets picked up. Only announce
+      // it as a fresh wiring the first time.
+      const wasOurs = statuslineIsOurs(projectDir);
+      await installStatusline(config, { projectDir });
+      if (!wasOurs) did.push('wired statusline');
     }
 
     if (!isDaemonRunning().running) {
@@ -349,7 +374,7 @@ function resolveMode(optionMode, config) {
 
 /**
  * Run the inject command for the chosen mode (statusline / patcher / both).
- * @param {{ mode?: string }} opts
+ * @param {{ mode?: string, project?: string }} opts
  * @returns {Promise<void>}
  */
 async function runInject(opts = {}) {
@@ -361,9 +386,12 @@ async function runInject(opts = {}) {
     );
   }
 
+  const projectDir = opts.project || process.env.CLAUDE_PROJECT_DIR || undefined;
+
   if (mode === 'statusline' || mode === 'both') {
-    const res = await installStatusline(config);
+    const res = await installStatusline(config, { projectDir });
     console.log('Statusline installed:');
+    console.log(`  scope:    ${res.scope}`);
     console.log(`  script:   ${res.statuslineSh}`);
     console.log(`  renderer: ${res.statuslineJs}`);
     console.log(`  settings: ${res.settingsPath}`);
@@ -400,7 +428,7 @@ async function runInject(opts = {}) {
 
 /**
  * Run the uninject command, reversing whichever injection mode is selected.
- * @param {{ mode?: string }} opts
+ * @param {{ mode?: string, project?: string }} opts
  * @returns {Promise<void>}
  */
 async function runUninject(opts = {}) {
@@ -412,8 +440,10 @@ async function runUninject(opts = {}) {
     );
   }
 
+  const projectDir = opts.project || process.env.CLAUDE_PROJECT_DIR || undefined;
+
   if (mode === 'statusline' || mode === 'both') {
-    const res = await uninstallStatusline();
+    const res = await uninstallStatusline({ projectDir });
     if (res.removed) {
       console.log(
         res.restored
@@ -509,12 +539,22 @@ function buildProgram() {
     .command('inject')
     .description('Wire ContextSpin into Claude Code (statusline/patcher/both)')
     .option('--mode <m>', 'injection mode: statusline, patcher, or both')
+    .option(
+      '--project <dir>',
+      'wire the project-scoped settings.local.json under <dir> (defaults to $CLAUDE_PROJECT_DIR); composes any statusline the repo ships',
+      process.env.CLAUDE_PROJECT_DIR,
+    )
     .action(action(async (opts) => runInject(opts)));
 
   program
     .command('uninject')
     .description('Remove ContextSpin from Claude Code')
     .option('--mode <m>', 'injection mode: statusline, patcher, or both')
+    .option(
+      '--project <dir>',
+      'uninject from the project-scoped settings.local.json under <dir> (defaults to $CLAUDE_PROJECT_DIR)',
+      process.env.CLAUDE_PROJECT_DIR,
+    )
     .action(action(async (opts) => runUninject(opts)));
 
   // Default action: run when no subcommand is provided. Any leftover operand

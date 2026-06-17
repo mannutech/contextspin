@@ -1,55 +1,12 @@
 {
   "sources": [
     {
-      "type": "mcp",
-      "tool": "slack_search_public",
-      "args": {
-        "query": "mentions:me is:unread"
-      },
-      "format": "Slack: {{ text }}",
-      "label": "Slack",
-      "cooldown": 300,
-      "maxSnippets": 2
-    },
-    {
       "type": "cli",
-      "command": "gh pr list --review-requested @me --json title,number --limit 3",
-      "format": "PR #{{ number }} needs your review: {{ title }}",
-      "label": "GitHub",
+      "command": "gh pr list --review-requested @me --json number,title --limit 5",
+      "format": "👀 review #{{ number }}: {{ title }}",
+      "label": "review",
       "cooldown": 120,
       "maxSnippets": 3
-    },
-    {
-      "type": "cli",
-      "command": "gh run list --json status,name,headBranch --limit 5",
-      "filter": "{{ status }} == failure",
-      "format": "CI failing: {{ name }} on {{ headBranch }}",
-      "label": "CI",
-      "cooldown": 60,
-      "maxSnippets": 2
-    },
-    {
-      "type": "mcp",
-      "tool": "notion-search",
-      "args": {
-        "query": "assigned:me status:open"
-      },
-      "format": "Notion: {{ text }}",
-      "label": "Notion",
-      "cooldown": 300,
-      "maxSnippets": 2
-    },
-    {
-      "type": "http",
-      "url": "https://grafana.example.com/api/datasources/proxy/1/query?q=incidents",
-      "headers": {
-        "Authorization": "Bearer {{ env.GRAFANA_TOKEN }}"
-      },
-      "jq": ".results[0].value",
-      "format": "Grafana: {{ value }}",
-      "label": "Grafana",
-      "cooldown": 30,
-      "maxSnippets": 1
     }
   ],
   "injection": {
@@ -60,13 +17,6 @@
   "snippets": {
     "deduplication": true,
     "cooldownAfterShown": 3,
-    "priorityOrder": [
-      "incident",
-      "ci",
-      "slack",
-      "calendar",
-      "github",
-      "jira"
-    ]
+    "priorityOrder": ["review", "incident", "ci", "slack", "calendar", "github", "gitlab", "jira"]
   }
 }

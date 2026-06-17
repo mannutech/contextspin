@@ -1,32 +1,33 @@
 // test/detect.test.js — unit tests for src/detect.js (detectSources).
 // Hermetic: no network. detectSources only probes PATH with `<tool> --version`;
-// whatever the host has installed, it must always return a usable starter set.
+// whatever the host has installed, it must always return exactly ONE "review
+// requests waiting on you" source (gh or glab, gh as a graceful placeholder).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { detectSources } from '../src/detect.js';
 import { normalizeConfig, validateConfig, defaultConfig } from '../src/config.js';
 
-test('detectSources returns a non-empty array of source objects', async () => {
+test('detectSources returns exactly one review source', async () => {
   const sources = await detectSources();
   assert.ok(Array.isArray(sources));
-  assert.ok(sources.length > 0, 'expected at least one detected source');
+  assert.equal(sources.length, 1, 'expected exactly one detected source');
 });
 
-test('detected sources are valid cli sources with no ids', async () => {
-  const sources = await detectSources();
-  for (const src of sources) {
-    assert.equal(src.type, 'cli');
-    assert.equal(typeof src.command, 'string');
-    assert.ok(src.command.length > 0);
-    assert.equal(typeof src.format, 'string');
-    assert.ok(src.format.length > 0);
-    assert.equal(typeof src.label, 'string');
-    assert.equal(typeof src.cooldown, 'number');
-    assert.equal(typeof src.maxSnippets, 'number');
-    // normalizeConfig assigns ids; detect must not.
-    assert.equal('id' in src, false);
-  }
+test('the detected source is the single "review requests waiting on you" cli source', async () => {
+  const [src] = await detectSources();
+  assert.equal(src.type, 'cli');
+  assert.equal(typeof src.command, 'string');
+  assert.ok(src.command.length > 0);
+  // It must target the requested-reviewer query of whichever CLI is present.
+  assert.match(src.command, /^(gh pr list --review-requested @me|glab mr list --reviewer=@me)/);
+  assert.equal(typeof src.format, 'string');
+  assert.match(src.format, /review/i);
+  assert.equal(src.label, 'review');
+  assert.equal(src.cooldown, 120);
+  assert.equal(src.maxSnippets, 3);
+  // normalizeConfig assigns ids; detect must not.
+  assert.equal('id' in src, false);
 });
 
 test('detected format/filter strings use the double-curly-brace token syntax', async () => {

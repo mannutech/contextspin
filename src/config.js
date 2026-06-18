@@ -74,10 +74,10 @@ export const DEFAULT_SNIPPETS = [
   "😄 To understand recursion, you must first understand recursion.",
   // Live-context teasers + onboarding — what to try next.
   "🌤️ Local weather appears here once the daemon warms up",
-  "📊 Run /contextspin-manage to see how many PRs you've closed to date",
-  "👀 Add a GitHub source to surface PRs awaiting your review",
-  "📅 Add a calendar source to see your next meeting here",
-  "🛠️ Run /contextspin-setup to wire up more live sources",
+  "📊 Ask /contextspin to see how many PRs you've closed to date",
+  "👀 Ask /contextspin to surface PRs awaiting your review",
+  "📅 Ask /contextspin to add your next meeting here",
+  "🛠️ Ask /contextspin to wire up more live sources",
 ];
 
 /**

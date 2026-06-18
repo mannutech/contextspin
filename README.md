@@ -46,22 +46,32 @@ ContextSpin polls those sources on a schedule, formats whatever they return into
 
 The daemon and the injector are decoupled by the cache file: the daemon writes snippets, the injector reads them. Each runs on its own clock.
 
-## Install / Quickstart
+## Install
 
 Requires Node.js >= 18 (ContextSpin uses the built-in global `fetch`).
 
+**One line — that's it:**
+
 ```bash
-# 1. Create a config (interactive, or non-interactive with --yes)
-npx contextspin setup
+curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
+```
 
-# 2. Start the background polling daemon
-npx contextspin start
+This wires a SessionStart hook into `~/.claude/settings.json` (so ContextSpin self-heals every session), seeds a no-credentials starter pack (weather, a dad joke, the top Hacker News story), and wires your status bar — non-destructively. Restart Claude Code and you'll see live snippets, never an empty bar.
 
-# 3. Wire the snippets into the Claude Code status bar
-npx contextspin inject
+Prefer to do it yourself? `npx contextspin install` does the same thing. To remove everything: `npx contextspin uninstall`.
+
+<details>
+<summary>Manual / advanced setup</summary>
+
+```bash
+npx contextspin setup     # create a config (add --yes to skip prompts)
+npx contextspin start     # start the background polling daemon
+npx contextspin inject    # wire snippets into the status bar
 ```
 
 Running `npx contextspin` with **no subcommand** is a shortcut: if no config exists it runs `setup`, otherwise it runs `start` followed by `inject` using the mode from your config.
+
+</details>
 
 Check what's happening at any time:
 

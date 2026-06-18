@@ -473,6 +473,123 @@ async function runUninject(opts = {}) {
 }
 
 /**
+ * The SessionStart hook command the `install` flow wires into the user settings
+ * so ContextSpin self-heals every session (the curl install replicates what the
+ * Claude Code plugin's hook does, without the marketplace). Runs from a neutral
+ * dir so npx never resolves a confused local package (Exit 127).
+ */
+const SESSIONSTART_HOOK_CMD =
+  'cd /tmp && npx --yes contextspin ensure >/dev/null 2>&1; exit 0';
+
+/**
+ * Read+parse a JSON file, returning a fallback on any read/parse error.
+ * @param {string} filePath
+ * @param {*} fallback
+ * @returns {*}
+ */
+function readJsonSafeSync(filePath, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Whether a SessionStart entry already runs ContextSpin (so install is idempotent).
+ * @param {*} entry
+ * @returns {boolean}
+ */
+function entryRunsContextspin(entry) {
+  return !!(
+    entry &&
+    Array.isArray(entry.hooks) &&
+    entry.hooks.some(
+      (h) => h && typeof h.command === 'string' && h.command.includes('contextspin'),
+    )
+  );
+}
+
+/**
+ * Wire a ContextSpin SessionStart hook into the user ~/.claude/settings.json so
+ * the daemon + statusline self-heal every session. JSON-merge (preserves every
+ * other key and any existing hooks). Idempotent.
+ * @returns {boolean} true if the hook was added (false if already present).
+ */
+function addSessionStartHook() {
+  fs.mkdirSync(path.dirname(CLAUDE_SETTINGS_PATH), { recursive: true });
+  const settings = readJsonSafeSync(CLAUDE_SETTINGS_PATH, {});
+  const obj = settings && typeof settings === 'object' ? settings : {};
+  obj.hooks = obj.hooks && typeof obj.hooks === 'object' ? obj.hooks : {};
+  const arr = Array.isArray(obj.hooks.SessionStart) ? obj.hooks.SessionStart : [];
+  if (arr.some(entryRunsContextspin)) return false;
+  arr.push({
+    matcher: '',
+    hooks: [{ type: 'command', command: SESSIONSTART_HOOK_CMD, timeout: 15 }],
+  });
+  obj.hooks.SessionStart = arr;
+  fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(obj, null, 2));
+  return true;
+}
+
+/**
+ * Remove any ContextSpin SessionStart hook from the user settings (best-effort,
+ * JSON-merge). Prunes empty containers.
+ * @returns {boolean} true if a hook was removed.
+ */
+function removeSessionStartHook() {
+  const settings = readJsonSafeSync(CLAUDE_SETTINGS_PATH, null);
+  if (!settings || typeof settings !== 'object' || !settings.hooks) return false;
+  const arr = Array.isArray(settings.hooks.SessionStart)
+    ? settings.hooks.SessionStart
+    : [];
+  const kept = arr.filter((e) => !entryRunsContextspin(e));
+  if (kept.length === arr.length) return false;
+  if (kept.length > 0) settings.hooks.SessionStart = kept;
+  else delete settings.hooks.SessionStart;
+  if (settings.hooks && Object.keys(settings.hooks).length === 0) {
+    delete settings.hooks;
+  }
+  fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  return true;
+}
+
+/**
+ * One-shot install (the `curl | bash` entrypoint): wire the SessionStart hook so
+ * ContextSpin self-heals each session, then run ensure (config + statusline +
+ * daemon) so it's live immediately. Prints a friendly summary.
+ * @returns {Promise<void>}
+ */
+async function runInstall() {
+  const addedHook = addSessionStartHook();
+  await runEnsure();
+  console.log('');
+  console.log(
+    addedHook
+      ? '✨ ContextSpin installed — it auto-refreshes every Claude Code session.'
+      : '✨ ContextSpin already installed (SessionStart hook present).',
+  );
+  console.log('   Restart Claude Code to see your statusline.');
+  console.log('   Check it anytime: contextspin status');
+}
+
+/**
+ * Full uninstall: remove the SessionStart hook, the statusline wiring, and stop
+ * the daemon.
+ * @returns {Promise<void>}
+ */
+async function runUninstall() {
+  const removedHook = removeSessionStartHook();
+  await uninstallStatusline({});
+  await stopDaemon();
+  console.log(
+    removedHook
+      ? 'ContextSpin uninstalled (hook removed, statusline restored, daemon stopped).'
+      : 'ContextSpin hook not found; statusline restored and daemon stopped.',
+  );
+}
+
+/**
  * The default action when no subcommand is given: set up if there is no config,
  * otherwise start the daemon and inject per the configured mode.
  * @returns {Promise<void>}
@@ -507,6 +624,18 @@ function buildProgram() {
     .description('Create a ContextSpin config (interactive, or --yes for a detected config)')
     .option('--yes', 'skip prompts and write a detected config')
     .action(action(async (opts) => runSetup(opts)));
+
+  program
+    .command('install')
+    .description(
+      'One-line install: wire the SessionStart hook so ContextSpin self-heals each session, then set up config + statusline + daemon',
+    )
+    .action(action(async () => runInstall()));
+
+  program
+    .command('uninstall')
+    .description('Remove ContextSpin entirely (SessionStart hook, statusline, daemon)')
+    .action(action(async () => runUninstall()));
 
   program
     .command('ensure')

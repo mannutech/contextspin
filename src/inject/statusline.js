@@ -33,6 +33,7 @@ import {
   CONFIG_PATH,
   CLAUDE_SETTINGS_PATH,
   DEFAULT_SNIPPETS,
+  WIRED_STATUSLINES_PATH,
 } from "../config.js";
 
 /**
@@ -461,6 +462,29 @@ async function writePrevMap(map) {
 }
 
 /**
+ * Read the wired-statuslines registry: an array of scope KEYS ("" for user
+ * scope, else an absolute project dir). Tolerates a missing/bad file (-> []).
+ * @returns {string[]}
+ */
+function readWiredList() {
+  const raw = readJsonSafeSync(WIRED_STATUSLINES_PATH, null);
+  return Array.isArray(raw) ? raw.filter((k) => typeof k === "string") : [];
+}
+
+/**
+ * Record a scope KEY in the wired-statuslines registry (idempotent).
+ * @param {string} key - "" for user scope, else an absolute project dir.
+ * @returns {Promise<void>}
+ */
+async function addWired(key) {
+  const list = readWiredList();
+  if (!list.includes(key)) {
+    list.push(key);
+    await writeJsonAtomic(WIRED_STATUSLINES_PATH, list);
+  }
+}
+
+/**
  * Resolve the statusLine command currently configured in a settings file (if
  * any), ignoring our own wrapper. Returns null when the file has no usable
  * non-ours statusLine command.
@@ -625,6 +649,10 @@ export async function installStatusline(config, opts = {}) {
 
   await writeJsonAtomic(targetPath, settingsObj);
 
+  // Record this scope in the wired registry so a later `uninstall` can tear down
+  // EVERY scope we touched (not just the user scope).
+  await addWired(key);
+
   if (composed) {
     const priorCmd = prior ? prior.command : (map[key] && map[key].command);
     warning =
@@ -771,4 +799,43 @@ export async function uninstallStatusline(opts = {}) {
     scope,
     note: "Removed the ContextSpin statusLine entry.",
   };
+}
+
+/**
+ * Tear down EVERY statusline scope ContextSpin has wired, by walking the wired
+ * registry (plus the user scope, always). This is what a full `uninstall` should
+ * call: project-scoped wirings written by the SessionStart hook (one per
+ * CLAUDE_PROJECT_DIR) are otherwise invisible to a user-scope-only uninstall and
+ * would keep rendering the ContextSpin line after removal.
+ *
+ * Clears the registry when done. Never throws — a failure for one scope is
+ * captured in that scope's result and the walk continues.
+ *
+ * @returns {Promise<UninstallStatuslineResult[]>}
+ */
+export async function uninstallAllStatuslines() {
+  // Always include the user scope (""), plus every recorded project key.
+  const keys = Array.from(new Set(["", ...readWiredList()]));
+  const results = [];
+  for (const key of keys) {
+    const projectDir = key === "" ? undefined : key;
+    try {
+      results.push(await uninstallStatusline({ projectDir }));
+    } catch (err) {
+      results.push({
+        removed: false,
+        restored: false,
+        settingsPath: key,
+        scope: projectDir ? "project" : "user",
+        note: `failed: ${err && err.message ? err.message : String(err)}`,
+      });
+    }
+  }
+  // Registry is consumed — drop it.
+  try {
+    await fsp.unlink(WIRED_STATUSLINES_PATH);
+  } catch {
+    // best effort
+  }
+  return results;
 }

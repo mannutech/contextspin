@@ -47,6 +47,16 @@ export const STATUSLINE_JS = path.join(STATE_DIR, "statusline-render.js");
  */
 export const PREV_STATUSLINE_PATH = path.join(STATE_DIR, "prev-statusline.json");
 
+/**
+ * Path to the registry of every settings file ContextSpin has wired its
+ * statusLine into. A JSON array of scope KEYS ("" for the user scope, else an
+ * absolute realpath'd project dir). `installStatusline` appends to it; a full
+ * `uninstall` walks it so EVERY scope is torn down — not just the user scope.
+ * Without this, project-scoped wirings (written by the SessionStart hook per
+ * CLAUDE_PROJECT_DIR) would linger after uninstall.
+ */
+export const WIRED_STATUSLINES_PATH = path.join(STATE_DIR, "wired-statuslines.json");
+
 /** Path to Claude Code's settings file (patched by the statusline injector). */
 export const CLAUDE_SETTINGS_PATH = path.join(HOME, ".claude", "settings.json");
 

@@ -25,7 +25,11 @@ import {
   isDaemonRunning,
   readCache,
 } from './daemon.js';
-import { installStatusline, uninstallStatusline } from './inject/statusline.js';
+import {
+  installStatusline,
+  uninstallStatusline,
+  uninstallAllStatuslines,
+} from './inject/statusline.js';
 import { installPatcher, restorePatcher } from './inject/patcher.js';
 import { detectSources } from './detect.js';
 
@@ -580,13 +584,21 @@ async function runInstall() {
  */
 async function runUninstall() {
   const removedHook = removeSessionStartHook();
-  await uninstallStatusline({});
+  // Tear down EVERY scope we wired (user + each project the hook touched), not
+  // just the user scope — otherwise project-scoped wirings keep rendering.
+  const results = await uninstallAllStatuslines();
+  const removed = results.filter((r) => r && r.removed);
   await stopDaemon();
   console.log(
-    removedHook
-      ? 'ContextSpin uninstalled (hook removed, statusline restored, daemon stopped).'
-      : 'ContextSpin hook not found; statusline restored and daemon stopped.',
+    `ContextSpin uninstalled: removed the statusline from ${removed.length} ` +
+      `scope${removed.length === 1 ? '' : 's'}, ` +
+      `${removedHook ? 'dropped the SessionStart hook, ' : ''}stopped the daemon.`,
   );
+  const projectScopes = removed.filter((r) => r.scope === 'project');
+  if (projectScopes.length > 0) {
+    console.log('Cleaned project statuslines:');
+    for (const r of projectScopes) console.log(`  ${r.settingsPath}`);
+  }
 }
 
 /**

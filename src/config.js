@@ -56,6 +56,21 @@ export const CLAUDE_USER_CONFIG_PATH = path.join(HOME, ".claude.json");
 /** Suffix appended to a Claude install path to name its patcher backup. */
 export const PATCHER_BACKUP_SUFFIX = ".contextspin.backup";
 
+/**
+ * Built-in "prefilled" snippet texts. The statusline render script falls back to
+ * these (rotating through them) whenever there is no live snippet to show — so
+ * the status bar is NEVER empty, even immediately after install before the daemon
+ * has fetched anything, or when every source returns nothing. They double as
+ * onboarding hints pointing at the next useful thing to configure.
+ */
+export const DEFAULT_SNIPPETS = [
+  "✨ ContextSpin is live — real-time context, right in your statusline",
+  "📅 Add a calendar source to see your next meeting here",
+  "👀 Add a GitHub source to surface PRs awaiting your review",
+  "🌤️ Add the weather starter source for local conditions at a glance",
+  "🛠️ Run the contextspin-setup skill to wire up more sources",
+];
+
 /** Default top-level config sections. */
 export const DEFAULTS = {
   injection: { mode: "statusline", refresh: 30, maxVisible: 5 },

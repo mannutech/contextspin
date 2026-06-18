@@ -123,8 +123,18 @@ test('installStatusline composes a prior USER statusline above the ContextSpin l
       out.indexOf('MYBAR-LINE-2') < out.indexOf('CONTEXTSPIN-SNIPPET'),
       'ContextSpin line must come after the prior statusline output',
     );
+    // The ContextSpin line is on its own line. It may be ANSI-styled, so look
+    // for the newline that precedes it and confirm nothing from the prior
+    // statusline shares that line (only styling sits between the \n and text).
     const csIdx = out.indexOf('CONTEXTSPIN-SNIPPET');
-    assert.equal(out[csIdx - 1], '\n', 'ContextSpin line must be on its own line');
+    const beforeCs = out.slice(0, csIdx);
+    const lastNl = beforeCs.lastIndexOf('\n');
+    assert.ok(lastNl !== -1, 'ContextSpin line must be on its own line');
+    const between = beforeCs.slice(lastNl + 1).replace(/\x1b\[[0-9;]*m/g, '');
+    assert.ok(
+      !between.includes('MYBAR'),
+      'ContextSpin line must not share a line with the prior statusline',
+    );
 
     // (3) Re-running install is idempotent and does not capture our own wrapper.
     const reinstall = runNode(installScript, env);

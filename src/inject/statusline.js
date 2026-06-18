@@ -32,6 +32,7 @@ import {
   CACHE_PATH,
   CONFIG_PATH,
   CLAUDE_SETTINGS_PATH,
+  DEFAULT_SNIPPETS,
 } from "../config.js";
 
 /**
@@ -72,6 +73,7 @@ function buildRenderScript(cachePath, configPath, prevPath) {
   const CACHE = JSON.stringify(cachePath);
   const CONFIG = JSON.stringify(configPath);
   const PREV = JSON.stringify(prevPath);
+  const DEFAULTS = JSON.stringify(DEFAULT_SNIPPETS);
   return `// contextspin statusline-render.js (generated) — composes any prior
 // statusline (looked up per-project) with one ContextSpin snippet line. MUST
 // always exit 0 and never lose the prior statusline's output, so the user's
@@ -82,6 +84,7 @@ import { spawn } from "node:child_process";
 const CACHE_PATH = ${CACHE};
 const CONFIG_PATH = ${CONFIG};
 const PREV_STATUSLINE_PATH = ${PREV};
+const DEFAULT_SNIPPETS = ${DEFAULTS};
 
 /** Buffer ALL of stdin into a Buffer. Resolves on end/close/error/timeout. */
 function readStdin() {
@@ -243,16 +246,41 @@ function writeJsonAtomic(filePath, data) {
   fs.renameSync(tmp, filePath);
 }
 
-/** Compute the ContextSpin snippet line (may be ""); bumps shownCount. */
+/**
+ * Pick a rotating built-in default snippet text. NEVER exhausts (defaults are
+ * always available) — this is the guarantee that the status bar is never empty.
+ * Persists a rotating index back into the cache object (caller writes it).
+ */
+function defaultLine(cache) {
+  if (!Array.isArray(DEFAULT_SNIPPETS) || DEFAULT_SNIPPETS.length === 0) return "";
+  const n = DEFAULT_SNIPPETS.length;
+  const idx = Number.isInteger(cache && cache._defaultIndex) ? cache._defaultIndex : 0;
+  const text = DEFAULT_SNIPPETS[((idx % n) + n) % n];
+  if (cache && typeof cache === "object") {
+    cache._defaultIndex = (idx + 1) % n;
+    try {
+      writeJsonAtomic(CACHE_PATH, cache);
+    } catch {
+      // best effort — still show the default this render
+    }
+  }
+  return String(text).replace(/\\r?\\n/g, " ");
+}
+
+/**
+ * Compute the ContextSpin snippet line. ALWAYS returns a non-empty string: a
+ * live snippet when one is eligible, otherwise a rotating built-in default so the
+ * status bar is never blank.
+ */
 function contextSpinLine() {
   let cache;
   try {
     cache = JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
   } catch {
-    return "";
+    cache = {};
   }
-  const snippets = Array.isArray(cache && cache.snippets) ? cache.snippets : [];
-  if (snippets.length === 0) return "";
+  if (!cache || typeof cache !== "object") cache = {};
+  const snippets = Array.isArray(cache.snippets) ? cache.snippets : [];
 
   // cooldownAfterShown from config (fallback 3).
   let cooldownAfterShown = 3;
@@ -267,7 +295,8 @@ function contextSpinLine() {
   const eligible = snippets.filter(
     (s) => s && typeof s.text === "string" && (s.shownCount || 0) < cooldownAfterShown
   );
-  if (eligible.length === 0) return "";
+  // No live snippet to show -> fall back to a rotating built-in default.
+  if (eligible.length === 0) return defaultLine(cache);
 
   eligible.sort((a, b) => {
     const ca = a.shownCount || 0;
@@ -287,6 +316,28 @@ function contextSpinLine() {
   }
 
   return String(chosen.text).replace(/\\r?\\n/g, " ");
+}
+
+/**
+ * Wrap the ContextSpin line in a compact, "boxed" ANSI style — bright italic
+ * text between cyan bars — so it stands out from the prior statusline. Honors
+ * \`injection.style: false\` in the config to opt out (plain text). Any error
+ * falls back to the plain text.
+ */
+function styleLine(text) {
+  if (!text) return text;
+  let enabled = true;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    if (cfg && cfg.injection && cfg.injection.style === false) enabled = false;
+  } catch {
+    // keep enabled
+  }
+  if (!enabled) return text;
+  const BAR = "\\x1b[36m"; // cyan
+  const BODY = "\\x1b[3;96m"; // italic + bright cyan
+  const RESET = "\\x1b[0m";
+  return BAR + "┃" + RESET + " " + BODY + text + RESET + " " + BAR + "┃" + RESET;
 }
 
 /** Write a string to stdout, awaiting the flush callback. */
@@ -314,10 +365,10 @@ async function main() {
     prevOut = "";
   }
 
-  // (b) ContextSpin snippet line.
+  // (b) ContextSpin snippet line (always non-empty; styled).
   let line = "";
   try {
-    line = contextSpinLine();
+    line = styleLine(contextSpinLine());
   } catch {
     line = "";
   }

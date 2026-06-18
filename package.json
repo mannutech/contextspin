@@ -1,6 +1,6 @@
 {
   "name": "contextspin",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Replace Claude Code spinner/statusline text with live org context (meetings, Slack, CI, incidents, PRs) aggregated from your existing MCP servers, CLIs, and HTTP endpoints.",
   "type": "module",
   "bin": {

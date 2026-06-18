@@ -5,7 +5,7 @@ import fsp from "node:fs/promises";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CACHE_PATH, STATE_DIR, PID_PATH, LOG_PATH, loadConfig } from "./config.js";
+import { CACHE_PATH, STATE_DIR, PID_PATH, LOG_PATH, loadConfig, configExists } from "./config.js";
 import { runSource } from "./runner.js";
 
 /**
@@ -187,6 +187,15 @@ export async function runDaemonLoop(opts = {}) {
   const runtime = { lastRun: {}, buckets: {}, snippets: [] };
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    // Self-exit if the config has been deleted (e.g. the user ran
+    // `contextspin uninstall` or removed ~/.contextspin.json by hand). Without
+    // this the daemon would keep polling stale sources and writing the cache
+    // forever, so the statusline would still show text after a teardown.
+    if (!configExists(opts.configPath)) {
+      console.log("contextspin config removed — daemon shutting down.");
+      shutdown();
+      return;
+    }
     try {
       const snippets = await pollOnce(config, runtime);
       await writeCache({ updatedAt: nowISO(), snippets });

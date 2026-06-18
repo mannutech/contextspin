@@ -1,6 +1,10 @@
 # ContextSpin
 
-Replace the Claude Code spinner / status bar text with live org context — meetings, Slack mentions, CI failures, incidents, review queues — pulled from tools you already run.
+Live context in your Claude Code **status bar** — weather, the top Hacker News story, PRs awaiting your review, CI failures, incidents, meetings — pulled from tools you already run. Install in one line; the bar is never empty.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
+```
 
 ## Key principle: ContextSpin does NOT fetch data
 
@@ -33,15 +37,14 @@ ContextSpin polls those sources on a schedule, formats whatever they return into
                               │  read cache
                               ▼
   ┌─────────────────────────────────────────────────────────┐
-  │  INJECTOR                                                 │
+  │  INJECTOR  (statusline — non-destructive, composed)       │
   │   statusline  ──►  ~/.contextspin/statusline.sh           │
-  │                    patches ~/.claude/settings.json        │
-  │   patcher     ──►  rewrites spinner words in the binary   │
-  │                    (EXPERIMENTAL)                          │
+  │                    composed into ~/.claude/settings.json   │
+  │   patcher     ──►  rewrites spinner words (EXPERIMENTAL)   │
   └───────────────────────────┬─────────────────────────────┘
                               │
                               ▼
-        Claude Code spinner / status bar shows one snippet
+            Claude Code status bar shows one snippet
 ```
 
 The daemon and the injector are decoupled by the cache file: the daemon writes snippets, the injector reads them. Each runs on its own clock.
@@ -170,7 +173,7 @@ ContextSpin reads one JSON file: `~/.contextspin.json` (override with the `CONTE
 
 | Field | Type | Format / values | Default | Meaning |
 |-------|------|-----------------|---------|---------|
-| `sources` | array | non-empty | — | List of sources to poll. Required. |
+| `sources` | array | — | `[]` | Sources to poll. May be empty (the bar then shows the built-in defaults). |
 | `sources[].type` | string | `mcp` \| `cli` \| `http` | — | Source kind. Required. |
 | `sources[].tool` | string | tool name or `mcp__server__tool` | — | Required for `mcp`. |
 | `sources[].command` | string | shell command | — | Required for `cli`. |
@@ -183,6 +186,7 @@ ContextSpin reads one JSON file: `~/.contextspin.json` (override with the `CONTE
 | `injection.mode` | string | `statusline` \| `patcher` \| `both` | `statusline` | How snippets reach the UI. |
 | `injection.refresh` | number | seconds | `30` | Daemon poll interval and status-line refresh interval (seconds). |
 | `injection.maxVisible` | number | count | `5` | Global cap on snippets held in the cache. |
+| `injection.style` | boolean | — | `true` | Render the line in a styled box (cyan bars + italic). Set `false` for plain text. |
 | `snippets.deduplication` | boolean | — | `true` | Drop snippets with duplicate text when merging. |
 | `snippets.cooldownAfterShown` | number | count | `3` | A snippet stops being eligible once shown this many times. |
 | `snippets.priorityOrder` | string[] | source labels | `[]` | Earlier labels sort first (case-insensitive); unlisted sort last. |
@@ -207,9 +211,9 @@ This is the supported path. It uses Claude Code's official [status line](https:/
 
 1. Write `~/.contextspin/statusline-render.js` — a self-contained script that drains stdin (so Claude Code's piped JSON can't cause `EPIPE`), reads the cache, picks the eligible snippet with the lowest `shownCount` (then most recent), increments its count, writes the cache back, and prints that one line. Any error exits cleanly with no output, so it can never break your status bar.
 2. Write `~/.contextspin/statusline.sh` — a `0755` bash wrapper that `exec`s the render script.
-3. Patch `~/.claude/settings.json` to set `statusLine` to `{ type: "command", command: "<statusline.sh>", padding: 0, refreshInterval: <refresh> }` (refresh is in **seconds**). If you already had a different status line, it is backed up to `~/.claude/settings.json.contextspin.bak` first.
+3. Point `statusLine` at that wrapper (refresh in **seconds**), **non-destructively**: any status line you already had is preserved and *composed* — the render script runs your prior command and prints its output **above** the ContextSpin line. Scope-aware: in a project (when `CLAUDE_PROJECT_DIR` is set) it writes the gitignored `<project>/.claude/settings.local.json`, which outranks a repo's tracked `settings.json`, so a project's own status line can't shadow ContextSpin.
 
-Reverse it with `contextspin uninject` (restores your previous status line if a backup exists).
+Reverse it with `contextspin uninject` (this scope) or `contextspin uninstall` (every scope it ever wired, plus the hook and daemon).
 
 ### `patcher` (EXPERIMENTAL — binary patching)
 
@@ -258,13 +262,16 @@ Restore the originals with `contextspin uninject --mode patcher` (or `inject --m
 
 | Command | What it does |
 |---------|--------------|
-| `contextspin setup [--yes]` | Create `~/.contextspin.json` (interactive, or from the bundled example with `--yes` / non-TTY). |
+| `contextspin install` | **One-shot install:** wire a self-healing SessionStart hook, create the config, wire the statusline, and start the daemon. (This is what the curl script runs.) |
+| `contextspin uninstall` | **Full teardown:** remove the hook, restore your prior statusline in **every** scope it wired, and stop the daemon. |
+| `contextspin setup [--yes]` | Create `~/.contextspin.json` (interactive, or a detected config with `--yes` / non-TTY). |
 | `contextspin start` | Start the detached polling daemon. |
 | `contextspin stop` | Stop the daemon. |
 | `contextspin restart` | Stop then start. |
 | `contextspin status` | Show daemon state and the current cached snippets (source, age, shown count). |
-| `contextspin inject [--mode <m>]` | Install the injector. `<m>` overrides `injection.mode` (`statusline` / `patcher` / `both`). |
-| `contextspin uninject [--mode <m>]` | Reverse the injector. |
+| `contextspin ensure` | Idempotent: create config + wire statusline + start daemon (run by the SessionStart hook each session). |
+| `contextspin inject [--mode <m>]` | Install just the injector. `<m>` overrides `injection.mode` (`statusline` / `patcher` / `both`). |
+| `contextspin uninject [--mode <m>]` | Reverse just the injector. |
 | `contextspin` *(no subcommand)* | `setup` if unconfigured, otherwise `start` then `inject`. |
 
 ## High-impact snippets
@@ -306,16 +313,18 @@ Three tiers, by how time-sensitive they are.
 
 ## Limitations
 
-- **MCP support is stdio-only.** ContextSpin discovers MCP servers from `~/.claude.json` (user and per-project scopes) and `.mcp.json`, and connects only to **stdio** servers (those with a `command`). HTTP / SSE / WebSocket MCP transports are not supported in Stage 1 — use a `cli` or `http` source instead. Plugin / managed scopes are ignored.
+- **MCP support is stdio-only.** ContextSpin discovers MCP servers from `~/.claude.json` (user and per-project scopes) and `.mcp.json`, and connects only to **stdio** servers (those with a `command`). HTTP / SSE / WebSocket MCP transports are not supported — use a `cli` or `http` source instead. Plugin / managed scopes are ignored.
 - **OAuth-based claude.ai connectors are not reachable.** App-connected connectors (Slack, Notion, etc. linked through claude.ai) authenticate via OAuth tokens stored in the OS keychain. A standalone background daemon has no access to those tokens, so it cannot drive those connectors. Use the corresponding CLI (`gh`, `slack` CLI…) or HTTP endpoint, or a locally-configured stdio MCP server, instead.
 - **The status line shows one rotating snippet** at a time, honoring `cooldownAfterShown` so the same item doesn't repeat indefinitely.
 - **The patcher is experimental** and is **overwritten by every Claude Code update**. Treat it as best-effort; the statusline mode is the supported path.
 
-## Roadmap
+## Zero-config defaults (never an empty bar)
 
-- **Stage 1 (now):** stdio MCP / CLI / HTTP sources, polling daemon + cache, statusline injection, experimental binary patcher, the CLI above.
-- **Stage 2 (polish):** quality-of-life improvements — better source discovery, richer setup wizard, more diagnostics.
-- **Stage 3 (`.plugin`):** package ContextSpin as a first-class Claude Code plugin.
+A fresh install needs no setup:
+
+- The config is seeded with a **no-credentials starter pack** — local weather, a dad joke, and the top Hacker News story — so real snippets appear within seconds.
+- When the cache is empty or every snippet is exhausted, the renderer falls back to **built-in defaults** (jokes + "ask `/contextspin`…" tips) that rotate, so the bar is never blank — even offline or before the first poll.
+- A Claude Code **plugin** is also available (the [`mannutech` marketplace](https://github.com/mannutech/claude-plugins)) for those who prefer installing that way — it wraps this same package.
 
 ## References
 

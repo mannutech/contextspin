@@ -64,11 +64,55 @@ export const PATCHER_BACKUP_SUFFIX = ".contextspin.backup";
  * onboarding hints pointing at the next useful thing to configure.
  */
 export const DEFAULT_SNIPPETS = [
-  "✨ ContextSpin is live — real-time context, right in your statusline",
-  "📅 Add a calendar source to see your next meeting here",
+  // Jokes — always available, even fully offline, so the bar is fun from second
+  // one. At least five so the rotation never feels repetitive.
+  "😄 Why do programmers prefer dark mode? Because light attracts bugs.",
+  "😄 A SQL query walks into a bar, sees two tables and asks: can I join you?",
+  "😄 Why did the developer go broke? He used up all his cache.",
+  "😄 There are 10 kinds of people: those who read binary and those who don't.",
+  "😄 I'd tell you a UDP joke, but you might not get it.",
+  "😄 To understand recursion, you must first understand recursion.",
+  // Live-context teasers + onboarding — what to try next.
+  "🌤️ Local weather appears here once the daemon warms up",
+  "📊 Run /contextspin-manage to see how many PRs you've closed to date",
   "👀 Add a GitHub source to surface PRs awaiting your review",
-  "🌤️ Add the weather starter source for local conditions at a glance",
-  "🛠️ Run the contextspin-setup skill to wire up more sources",
+  "📅 Add a calendar source to see your next meeting here",
+  "🛠️ Run /contextspin-setup to wire up more live sources",
+];
+
+/**
+ * No-credentials starter sources seeded into the DEFAULT config on first install
+ * so the user sees REAL live context (weather, a fresh joke, the top HN story)
+ * immediately — not just static tips. All are public HTTP endpoints needing no
+ * auth. Combined with detected sources (e.g. review requests) by defaultConfig.
+ */
+export const STARTER_SOURCES = [
+  {
+    type: "http",
+    url: "https://wttr.in/?format=3",
+    format: "🌤️ {{text}}",
+    label: "weather",
+    cooldown: 1800,
+    maxSnippets: 1,
+  },
+  {
+    type: "http",
+    url: "https://icanhazdadjoke.com/",
+    headers: { Accept: "text/plain" },
+    format: "😄 {{text}}",
+    label: "joke",
+    cooldown: 1800,
+    maxSnippets: 1,
+  },
+  {
+    type: "http",
+    url: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=1",
+    jq: ".hits[0].title",
+    format: "📰 HN: {{value}}",
+    label: "hackernews",
+    cooldown: 600,
+    maxSnippets: 1,
+  },
 ];
 
 /** Default top-level config sections. */
@@ -159,8 +203,16 @@ export function normalizeConfig(raw) {
  * @returns {object} A default config: { sources, injection, snippets }.
  */
 export function defaultConfig(sources) {
+  const detected = Array.isArray(sources) ? sources : [];
+  // Seed the no-credentials starter sources so a brand-new install shows REAL
+  // live context right away. Skip any starter whose label a detected source
+  // already provides, so we never double up.
+  const have = new Set(detected.map((s) => s && s.label).filter(Boolean));
+  const starters = STARTER_SOURCES.filter((s) => !have.has(s.label)).map((s) => ({
+    ...s,
+  }));
   return {
-    sources: Array.isArray(sources) ? sources : [],
+    sources: [...detected, ...starters],
     injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
     snippets: {
       deduplication: true,
@@ -174,6 +226,9 @@ export function defaultConfig(sources) {
         "github",
         "gitlab",
         "jira",
+        "weather",
+        "joke",
+        "hackernews",
       ],
     },
   };

@@ -37,7 +37,13 @@ test('defaultConfig returns the documented shape', () => {
     { type: 'cli', command: 'echo hi', format: '{{ value }}', label: 'X' },
   ];
   const cfg = defaultConfig(sources);
-  assert.equal(cfg.sources, sources); // passes the array through by reference
+  // Detected sources come first, followed by the no-credentials starter pack
+  // (weather, joke, hackernews) so a fresh install shows live context.
+  assert.equal(cfg.sources[0], sources[0]);
+  assert.deepEqual(
+    cfg.sources.map((s) => s.label),
+    ['X', 'weather', 'joke', 'hackernews'],
+  );
   assert.deepEqual(cfg.injection, { mode: 'statusline', refresh: 30, maxVisible: 5 });
   assert.equal(cfg.snippets.deduplication, true);
   assert.equal(cfg.snippets.cooldownAfterShown, 3);
@@ -50,12 +56,22 @@ test('defaultConfig returns the documented shape', () => {
     'github',
     'gitlab',
     'jira',
+    'weather',
+    'joke',
+    'hackernews',
   ]);
 });
 
 test('defaultConfig tolerates a non-array sources argument', () => {
-  assert.deepEqual(defaultConfig(undefined).sources, []);
-  assert.deepEqual(defaultConfig(null).sources, []);
+  // With no detected sources, the config still seeds the starter pack.
+  assert.deepEqual(
+    defaultConfig(undefined).sources.map((s) => s.label),
+    ['weather', 'joke', 'hackernews'],
+  );
+  assert.deepEqual(
+    defaultConfig(null).sources.map((s) => s.label),
+    ['weather', 'joke', 'hackernews'],
+  );
 });
 
 test('defaultConfig output normalizes and validates', () => {

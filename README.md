@@ -1,331 +1,163 @@
 # ContextSpin
 
-Live context in your Claude Code **status bar** — weather, the top Hacker News story, PRs awaiting your review, CI failures, incidents, meetings — pulled from tools you already run. Install in one line; the bar is never empty.
+Live context in your Claude Code **status bar** — weather, the top Hacker News story, PRs awaiting your review, CI failures, incidents, meetings — pulled from tools you already run. One-line install, and the bar is never empty.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
 ```
 
-## Key principle: ContextSpin does NOT fetch data
+Requires Node.js ≥ 18. MIT licensed. The only runtime dependency is [`commander`](https://www.npmjs.com/package/commander).
 
-ContextSpin is a **compositor and renderer, not a data layer.** It has no API clients, no auth flows, and no integrations of its own. Instead it **aggregates from sources you already have**:
+## It does NOT fetch data
 
-- **existing MCP servers** registered in your `~/.claude.json` / `.mcp.json`
-- **CLI tools** already installed and authenticated on your machine (`gh`, `kubectl`, `aws`, your own scripts…)
-- **HTTP endpoints** you can already reach (internal dashboards, status APIs)
+ContextSpin is a **renderer, not a data layer** — no API clients, no auth flows, no integrations of its own. It aggregates from sources you already have:
 
-ContextSpin formats whatever your sources return into short one-line snippets and shows the most relevant one in the Claude Code status bar. If a piece of data isn't reachable by a tool you already have, ContextSpin cannot show it — by design. The only runtime dependency is [`commander`](https://www.npmjs.com/package/commander).
+- **MCP servers** registered in `~/.claude.json` / `.mcp.json` (stdio only)
+- **CLI tools** already installed and authed (`gh`, `kubectl`, `glab`, your scripts…)
+- **HTTP endpoints** you can already reach
 
-## Architecture (daemonless)
+It formats whatever they return into one-line snippets and shows the most relevant one. If a tool you have can't reach the data, ContextSpin can't show it — by design.
 
-There is **no background daemon by default**. The statusline render is the engine: it serves the cached snippet instantly, and only when a source is due does it kick off a detached one-shot refresh (lock-guarded so frequent renders never overlap). Nothing runs when you're not in Claude Code — idle cost is zero.
+## How it works (daemonless)
+
+There is **no background process by default**. The statusline render is the engine — it serves the cached snippet instantly, and only when a source is past its cooldown does it spawn a detached one-shot refresh (lock-guarded so frequent renders never overlap). Nothing runs when you're not in Claude Code, so idle cost is zero.
 
 ```
-  Claude Code draws the status bar (every refreshInterval)
-                              │
-                              ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │  RENDER  ~/.contextspin/statusline.mjs                    │
-  │   1. read ~/.contextspin-cache.json                       │
-  │   2. print one snippet NOW (stale is fine) ───────────────┼──► status bar
-  │   3. if a source is past its cooldown AND no refresh is    │
-  │      in flight → spawn a detached one-shot refresh:        │
-  └───────────────────────────┬─────────────────────────────┘
-                              │  (background, non-blocking)
-                              ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │  REFRESH  (one-shot)  src/refresh-entry.js               │
-  │   • runs each DUE source (cli / http / mcp), formats      │
-  │   • merges / dedups / prioritizes, records lastRun        │
-  │   • writes ~/.contextspin-cache.json  (atomic)           │
-  └─────────────────────────────────────────────────────────┘
+  Claude Code draws the status bar
+              │
+              ▼
+  RENDER  (~/.contextspin/statusline.mjs)
+   1. read the cache, print one snippet NOW (stale is fine) ──► status bar
+   2. if a source is due and no refresh is in flight:
+              │
+              ▼  (detached, non-blocking)
+  REFRESH  (one-shot, src/refresh-entry.js)
+   • run each DUE source, format, merge/dedup/prioritize, record lastRun
+   • write ~/.contextspin-cache.json (atomic)
 ```
 
-This is *stale-while-revalidate*: the bar is always fast (it never waits on the network), and freshness catches up in the background. A legacy always-on **daemon** is still available behind `injection.daemonless: false` — useful only if you poll stdio **MCP** sources, where a persistent connection beats per-render handshakes.
-
-The daemon and the injector are decoupled by the cache file: the daemon writes snippets, the injector reads them. Each runs on its own clock.
+This is *stale-while-revalidate*: the bar is always fast, freshness catches up in the background. A legacy always-on daemon is still available behind `injection.daemonless: false` — only worth it for stdio MCP sources, where a persistent connection beats per-render handshakes.
 
 ## Install
 
-Requires Node.js >= 18 (ContextSpin uses the built-in global `fetch`).
-
-**One line — that's it:**
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
 ```
 
-This wires a SessionStart hook into `~/.claude/settings.json` (so ContextSpin self-heals every session), seeds a no-credentials starter pack (weather, a dad joke, the top Hacker News story), and wires your status bar — non-destructively. Restart Claude Code and you'll see live snippets, never an empty bar.
+This wires a SessionStart hook into `~/.claude/settings.json` (so it self-heals each session), seeds a no-credentials starter pack (weather, a dad joke, the top HN story), and wires your status bar **non-destructively** (any existing status line is preserved and composed above ours). Restart Claude Code to see it.
 
-Prefer to do it yourself? `npx contextspin install` does the same thing. To remove everything: `npx contextspin uninstall`.
+`npx contextspin install` does the same. `npx contextspin uninstall` removes everything. `npx contextspin status` shows the current snippets.
 
-<details>
-<summary>Manual / advanced setup</summary>
+## Sources
 
-```bash
-npx contextspin setup     # create a config (add --yes to skip prompts)
-npx contextspin inject    # wire snippets into the status bar
-# that's it — the render refreshes itself; no daemon to start
-```
+Every source returns a list of records. Each record is optionally `filter`ed, then rendered with `format` using `{{ field }}` templating — dotted/bracketed paths work (`{{ results[0].value }}`), `{{ env.NAME }}` reads an environment variable, unknown fields render empty.
 
-`npx contextspin install` is the recommended path (it also wires the self-healing SessionStart hook). Running `npx contextspin` with **no subcommand** sets up if unconfigured, otherwise wires + refreshes.
-
-</details>
-
-Check what's happening at any time:
-
-```bash
-npx contextspin status
-```
-
-## Source types
-
-Every source produces a list of records. Each record is run through an optional `filter`, then rendered with `format` using **double-curly-brace** field templating (`{{ field }}`). Inner whitespace is allowed. Dotted and bracketed paths work (`{{ results[0].value }}`), and `{{ env.NAME }}` resolves to an environment variable. Unknown fields render as the empty string.
-
-### `mcp` — call a tool on an existing MCP server
-
-Calls a tool on a **stdio** MCP server discovered from your Claude config. ContextSpin speaks JSON-RPC 2.0 over the server's stdin/stdout itself — no SDK, no extra dependency.
-
-```json
-{
-  "type": "mcp",
-  "tool": "slack_search_public",
-  "args": { "query": "mentions:me is:unread" },
-  "format": "Slack: {{ text }}",
-  "label": "Slack",
-  "cooldown": 300,
-  "maxSnippets": 2
-}
-```
-
-- `tool` is required. You may pass a bare tool name (`slack_search_public`) or the fully-qualified `mcp__<server>__<tool>` form; the `mcp__<server>__` prefix is stripped to find the raw tool and to infer which server to use.
-- `server` is optional. If omitted and the tool name doesn't encode it, ContextSpin connects to each stdio server, lists its tools, and uses the first one that exposes the tool.
-- `args` is passed straight through as the tool-call arguments.
-
-### `cli` — run a shell command
-
-```json
-{
-  "type": "cli",
-  "command": "gh pr list --review-requested @me --json title,number --limit 3",
-  "format": "PR #{{ number }} needs your review: {{ title }}",
-  "label": "GitHub",
-  "cooldown": 120,
-  "maxSnippets": 3
-}
-```
-
-The command runs through your shell. Output parsing is forgiving:
-
-- a **JSON array** → each element becomes a record (objects kept as-is; primitives wrapped as `{ value, text }`)
-- a **JSON object** → a single record
-- a **JSON primitive** → `{ value, text }`
-- **anything else** → split into non-empty lines, each becoming `{ text, line, value }`
-
-A non-zero exit throws; a configurable timeout (default 15s) protects against hangs.
-
-### `http` — fetch a JSON (or text) endpoint
-
-```json
-{
-  "type": "http",
-  "url": "https://grafana.example.com/api/datasources/proxy/1/query?q=incidents",
-  "headers": { "Authorization": "Bearer {{ env.GRAFANA_TOKEN }}" },
-  "jq": ".results[0].value",
-  "format": "Grafana: {{ value }}",
-  "label": "Grafana",
-  "cooldown": 30,
-  "maxSnippets": 1
-}
-```
-
-- `url` and header values are interpolated, so you can inject secrets with `{{ env.X }}` instead of hard-coding them.
-- `method` defaults to `GET`; a `body` object is JSON-stringified with the right content-type.
-- `jq` accepts a **minimal jq subset**: identity `.`, dotted keys (`.a.b`), bracket indexing (`.a[0]`), iteration (`.[]`, `.a[]`), and left-to-right pipes (`a | b`). Unsupported expressions pass the data through unchanged rather than erroring.
-
-## Configuration
-
-ContextSpin reads one JSON file: `~/.contextspin.json` (override with the `CONTEXTSPIN_CONFIG` environment variable). The cache lives at `~/.contextspin-cache.json` (override with `CONTEXTSPIN_CACHE`).
-
-```json
-{
-  "sources": [
-    { "type": "cli", "command": "gh pr list --json title --limit 3", "format": "PR: {{ title }}" }
-  ],
-  "injection": {
-    "mode": "statusline",
-    "refresh": 30,
-    "maxVisible": 5
-  },
-  "snippets": {
-    "deduplication": true,
-    "cooldownAfterShown": 3,
-    "priorityOrder": ["incident", "ci", "slack", "calendar", "github", "jira"]
-  }
-}
-```
-
-### Field reference
-
-| Field | Type | Format / values | Default | Meaning |
-|-------|------|-----------------|---------|---------|
-| `sources` | array | — | `[]` | Sources to poll. May be empty (the bar then shows the built-in defaults). |
-| `sources[].type` | string | `mcp` \| `cli` \| `http` | — | Source kind. Required. |
-| `sources[].tool` | string | tool name or `mcp__server__tool` | — | Required for `mcp`. |
-| `sources[].command` | string | shell command | — | Required for `cli`. |
-| `sources[].url` | string | URL (templated) | — | Required for `http`. |
-| `sources[].format` | string | `{{ field }}` template | — | One-line render template. Required. |
-| `sources[].filter` | string | `LEFT OP RIGHT` | — | Optional. Keep a record only if it passes. See below. |
-| `sources[].label` | string | free text | derived | Shown as the snippet source. Derived if omitted: mcp→tool name, cli→first command token, http→hostname. |
-| `sources[].cooldown` | number | seconds | `300` | Minimum seconds between polls of this source. |
-| `sources[].maxSnippets` | number | count | `2` | Max snippets kept from one poll of this source. |
-| `injection.mode` | string | `statusline` \| `patcher` \| `both` | `statusline` | How snippets reach the UI. |
-| `injection.refresh` | number | seconds | `30` | Daemon poll interval and status-line refresh interval (seconds). |
-| `injection.maxVisible` | number | count | `5` | Global cap on snippets held in the cache. |
-| `injection.style` | boolean | — | `true` | Render the line in a styled box (cyan bars + italic). Set `false` for plain text. |
-| `injection.daemonless` | boolean | — | `true` | Render self-refreshes (stale-while-revalidate), no background process. Set `false` for the legacy always-on daemon. |
-| `snippets.deduplication` | boolean | — | `true` | Drop snippets with duplicate text when merging. |
-| `snippets.cooldownAfterShown` | number | count | `3` | A snippet stops being eligible once shown this many times. |
-| `snippets.priorityOrder` | string[] | source labels | `[]` | Earlier labels sort first (case-insensitive); unlisted sort last. |
-
-### Filters
-
-`filter` is a **single, safe comparison** — no `eval`, no `Function`. The whole expression is interpolated against the record first, then parsed as `LEFT OP RIGHT` where `OP` is one of `==`, `!=`, `>=`, `<=`, `>`, `<`, or the word `includes`. Both numeric sides compare numerically; otherwise they compare as strings (`==` / `!=` are loose). `includes` is substring containment. With no operator, the result is truthy unless it's empty, `false`, or `0`.
-
-```json
-{ "filter": "{{ status }} == failure" }
-```
-
-Only one comparison is supported — there is no `&&` / `||`.
-
-## Injection modes
-
-### `statusline` (recommended, official)
-
-This is the supported path. It uses Claude Code's official [status line](https://code.claude.com/docs/en/statusline) feature, so it survives Claude Code updates.
-
-`contextspin inject` (mode `statusline`) will:
-
-1. Write `~/.contextspin/statusline-render.js` — a self-contained script that drains stdin (so Claude Code's piped JSON can't cause `EPIPE`), reads the cache, picks the eligible snippet with the lowest `shownCount` (then most recent), increments its count, writes the cache back, and prints that one line. Any error exits cleanly with no output, so it can never break your status bar.
-2. Write `~/.contextspin/statusline.sh` — a `0755` bash wrapper that `exec`s the render script.
-3. Point `statusLine` at that wrapper (refresh in **seconds**), **non-destructively**: any status line you already had is preserved and *composed* — the render script runs your prior command and prints its output **above** the ContextSpin line. Scope-aware: in a project (when `CLAUDE_PROJECT_DIR` is set) it writes the gitignored `<project>/.claude/settings.local.json`, which outranks a repo's tracked `settings.json`, so a project's own status line can't shadow ContextSpin.
-
-Reverse it with `contextspin uninject` (this scope) or `contextspin uninstall` (every scope it ever wired, plus the hook and daemon).
-
-### `patcher` (EXPERIMENTAL — binary patching)
-
-> ⚠️ **Experimental and fragile.** Inspired by [claude-depester](https://github.com/ominiverdi/claude-depester). It rewrites the hard-coded spinner words (`Flibbertigibbeting`, `Discombobulating`, …) inside the Claude Code binary/bundle with your live snippets.
-
-Key facts:
-
-- It is **length-preserving**: the replacement is padded with spaces so the file size never changes. If your snippets don't fit, words are trimmed until they do.
-- It works on both **text** (`cli.js`) and **compiled binary** installs, located by scanning the usual install paths and keeping only files that actually contain the marker word.
-- A **restart of Claude Code is required** for the patch to take effect.
-- **Claude Code updates overwrite the patch.** The installer also writes a wrapper at `~/.contextspin/cl.sh` that re-applies the patch and then `exec`s `claude`. After every Claude Code update you must re-patch — using that wrapper is the easiest way.
-- On macOS it makes a best-effort `codesign` re-sign after patching.
-
-Restore the originals with `contextspin uninject --mode patcher` (or `inject --mode both` / `uninject --mode both` to do both at once). A backup with the suffix `.contextspin.backup` is created before any install is touched.
-
-## Refresh and cache
-
-By default there is **no background process**. Each time the status bar draws, the render:
-
-1. Prints the current cached snippet immediately (stale is fine).
-2. If any source is past its `cooldown` and no refresh is already in flight (a lock at `~/.contextspin/refresh.lock`, TTL 60s), spawns a **detached one-shot refresh**. That refresh runs only the due sources, merges into the existing set (preserves `shownCount` for matching text, optionally dedups, sorts by `priorityOrder` then recency, caps to `injection.maxVisible`), records per-source `lastRun`, and atomically writes the cache.
-
-Set `injection.daemonless: false` to use the **legacy daemon** instead: `contextspin start` spawns a detached background process (PID at `~/.contextspin/daemon.pid`, logs at `~/.contextspin/daemon.log`) that polls on `injection.refresh` and writes the same cache. Use this only if you poll stdio MCP sources.
-
-### Cache file format (`~/.contextspin-cache.json`)
-
-```json
-{
-  "updatedAt": "2026-06-17T09:00:00.000Z",
-  "snippets": [
-    {
-      "text": "CI failing: build on main",
-      "source": "CI",
-      "sourceId": 2,
-      "fetchedAt": "2026-06-17T09:00:00.000Z",
-      "shownCount": 0
-    }
-  ],
-  "meta": { "lastRun": { "2": 1781860451773 } }
-}
-```
-
-`shownCount` is incremented by the render each time a snippet is displayed; once it reaches `cooldownAfterShown` the snippet is no longer shown. `meta.lastRun` maps `sourceId → last poll (epoch ms)` so the daemonless refresh honors per-source cooldowns across runs.
-
-## CLI commands
-
-| Command | What it does |
-|---------|--------------|
-| `contextspin install` | **One-shot install:** wire a self-healing SessionStart hook, create the config, and wire the statusline. (This is what the curl script runs.) |
-| `contextspin uninstall` | **Full teardown:** remove the hook, restore your prior statusline in **every** scope it wired, and stop any daemon. |
-| `contextspin setup [--yes]` | Create `~/.contextspin.json` (interactive, or a detected config with `--yes` / non-TTY). |
-| `contextspin status` | Show the engine, and the current cached snippets (source, age, shown count). |
-| `contextspin ensure` | Idempotent: create config + wire statusline (run by the SessionStart hook each session). |
-| `contextspin inject [--mode <m>]` | Install just the injector. `<m>` overrides `injection.mode` (`statusline` / `patcher` / `both`). |
-| `contextspin uninject [--mode <m>]` | Reverse just the injector. |
-| `contextspin start` / `stop` / `restart` | Manage the **legacy daemon** (only when `injection.daemonless: false`). |
-| `contextspin` *(no subcommand)* | `setup` if unconfigured, otherwise wire + refresh. |
-
-## High-impact snippets
-
-Three tiers, by how time-sensitive they are.
-
-### Tier 1 — time-sensitive (act in minutes)
-
-```json
-{ "type": "cli", "command": "gh run list --json status,name,headBranch --limit 5",
-  "filter": "{{ status }} == failure",
-  "format": "CI failing: {{ name }} on {{ headBranch }}", "label": "CI", "cooldown": 60, "maxSnippets": 2 }
-```
-
-```json
-{ "type": "http", "url": "https://grafana.example.com/api/datasources/proxy/1/query?q=incidents",
-  "headers": { "Authorization": "Bearer {{ env.GRAFANA_TOKEN }}" },
-  "jq": ".results[0].value", "format": "Grafana: {{ value }}", "label": "Grafana", "cooldown": 30, "maxSnippets": 1 }
-```
-
-### Tier 2 — ambient ops (good to know)
+**`mcp`** — call a tool on a stdio MCP server discovered from your Claude config (JSON-RPC over stdin/stdout, no SDK):
 
 ```json
 { "type": "mcp", "tool": "slack_search_public", "args": { "query": "mentions:me is:unread" },
   "format": "Slack: {{ text }}", "label": "Slack", "cooldown": 300, "maxSnippets": 2 }
 ```
 
-```json
-{ "type": "mcp", "tool": "notion-search", "args": { "query": "assigned:me status:open" },
-  "format": "Notion: {{ text }}", "label": "Notion", "cooldown": 300, "maxSnippets": 2 }
-```
+`tool` may be bare or `mcp__<server>__<tool>`; `server` is optional (otherwise the first stdio server exposing the tool is used).
 
-### Tier 3 — work queue (your to-do)
+**`cli`** — run a shell command (output parsed as a JSON array/object/primitive, or split into lines):
 
 ```json
 { "type": "cli", "command": "gh pr list --review-requested @me --json title,number --limit 3",
-  "format": "PR #{{ number }} needs your review: {{ title }}", "label": "GitHub", "cooldown": 120, "maxSnippets": 3 }
+  "format": "PR #{{ number }} needs review: {{ title }}", "label": "GitHub", "cooldown": 120, "maxSnippets": 3 }
 ```
+
+**`http`** — fetch a JSON or text endpoint:
+
+```json
+{ "type": "http", "url": "https://grafana.example.com/api/.../query?q=incidents",
+  "headers": { "Authorization": "Bearer {{ env.GRAFANA_TOKEN }}" },
+  "jq": ".results[0].value", "format": "Grafana: {{ value }}", "label": "Grafana", "cooldown": 30 }
+```
+
+`url` and headers are interpolated (use `{{ env.X }}` for secrets, never hard-code them). `jq` supports a minimal subset: identity, dotted keys, bracket indexing, iteration (`.[]`), and pipes.
+
+## Configuration
+
+One JSON file, `~/.contextspin.json` (override with `CONTEXTSPIN_CONFIG`); cache at `~/.contextspin-cache.json` (override with `CONTEXTSPIN_CACHE`).
+
+```json
+{
+  "sources": [
+    { "type": "cli", "command": "gh pr list --json title --limit 3", "format": "PR: {{ title }}" }
+  ],
+  "injection": { "mode": "statusline", "refresh": 30, "maxVisible": 5 },
+  "snippets": { "deduplication": true, "cooldownAfterShown": 3, "priorityOrder": ["incident", "ci", "github"] }
+}
+```
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `sources[].type` | — | `mcp` \| `cli` \| `http` (required) |
+| `sources[].tool` / `command` / `url` | — | Required for `mcp` / `cli` / `http` respectively |
+| `sources[].format` | — | One-line `{{ field }}` template (required) |
+| `sources[].filter` | — | Keep a record only if it passes (see below) |
+| `sources[].label` | derived | Snippet source label (mcp→tool, cli→first token, http→host) |
+| `sources[].cooldown` | `300` | Min seconds between polls of this source |
+| `sources[].maxSnippets` | `2` | Max snippets kept per poll |
+| `injection.refresh` | `30` | Status-bar refresh interval, seconds |
+| `injection.maxVisible` | `5` | Cap on snippets held in the cache |
+| `injection.style` | `true` | Styled box (cyan bars + italic); `false` for plain text |
+| `injection.daemonless` | `true` | Self-refreshing render; `false` for the legacy daemon |
+| `injection.mode` | `statusline` | `statusline` \| `patcher` \| `both` |
+| `snippets.deduplication` | `true` | Drop duplicate-text snippets when merging |
+| `snippets.cooldownAfterShown` | `3` | A snippet stops showing after this many displays |
+| `snippets.priorityOrder` | `[]` | Source labels sorted first (case-insensitive); rest last |
+
+**Filters** are a single safe comparison (no `eval`): the expression is interpolated, then parsed as `LEFT OP RIGHT` where `OP` is `==`, `!=`, `>=`, `<=`, `>`, `<`, or `includes`. No `&&`/`||`.
+
+```json
+{ "filter": "{{ status }} == failure" }
+```
+
+## Cache
+
+```json
+{
+  "updatedAt": "2026-06-17T09:00:00.000Z",
+  "snippets": [
+    { "text": "CI failing: build on main", "source": "CI", "sourceId": 2,
+      "fetchedAt": "2026-06-17T09:00:00.000Z", "shownCount": 0 }
+  ],
+  "meta": { "lastRun": { "2": 1781860451773 } }
+}
+```
+
+`shownCount` rises each time a snippet is shown; past `cooldownAfterShown` it's retired. `meta.lastRun` maps `sourceId → last poll (ms)` so the refresh honors per-source cooldowns across runs. When the cache is empty or every snippet is retired, the render rotates through built-in defaults (jokes + tips) — so the bar is never blank.
+
+## CLI
+
+| Command | What it does |
+|---------|--------------|
+| `install` | Wire the self-healing SessionStart hook, create config, wire the statusline (what the curl script runs). |
+| `uninstall` | Remove the hook, restore your prior statusline in **every** scope, stop any daemon. |
+| `status` | Show the engine and cached snippets. |
+| `refresh` | Force a one-shot refresh of all due sources now. |
+| `setup [--yes]` | Create `~/.contextspin.json` (interactive, or detected with `--yes`). |
+| `ensure` | Idempotent create-config + wire-statusline (run by the hook each session). |
+| `inject` / `uninject [--mode <m>]` | Install / reverse just the injector. |
+| `start` / `stop` / `restart` | Manage the legacy daemon (only when `injection.daemonless: false`). |
+
+## Statusline injection
+
+Uses Claude Code's official [status line](https://code.claude.com/docs/en/statusline) feature, so it survives updates. The wrapper is **non-destructive and scope-aware**: any status line you already had is composed above the ContextSpin line, and in a project (`CLAUDE_PROJECT_DIR` set) it writes the gitignored `<project>/.claude/settings.local.json` so a repo's own status line can't shadow it. Reverse with `uninject` (this scope) or `uninstall` (everything).
+
+There's also an **experimental** `patcher` mode (`injection.mode: "patcher"`) that rewrites Claude Code's hard-coded spinner words in the binary — inspired by [claude-depester](https://github.com/ominiverdi/claude-depester). It's length-preserving and best-effort, but **every Claude Code update overwrites it**, so the statusline is the supported path. Restore with `uninject --mode patcher`.
 
 ## Limitations
 
-- **MCP support is stdio-only.** ContextSpin discovers MCP servers from `~/.claude.json` (user and per-project scopes) and `.mcp.json`, and connects only to **stdio** servers (those with a `command`). HTTP / SSE / WebSocket MCP transports are not supported — use a `cli` or `http` source instead. Plugin / managed scopes are ignored.
-- **OAuth-based claude.ai connectors are not reachable.** App-connected connectors (Slack, Notion, etc. linked through claude.ai) authenticate via OAuth tokens stored in the OS keychain. A standalone background daemon has no access to those tokens, so it cannot drive those connectors. Use the corresponding CLI (`gh`, `slack` CLI…) or HTTP endpoint, or a locally-configured stdio MCP server, instead.
-- **The status line shows one rotating snippet** at a time, honoring `cooldownAfterShown` so the same item doesn't repeat indefinitely.
-- **The patcher is experimental** and is **overwritten by every Claude Code update**. Treat it as best-effort; the statusline mode is the supported path.
+- **MCP is stdio-only** — discovered from `~/.claude.json` / `.mcp.json`; HTTP/SSE MCP transports aren't supported (use a `cli`/`http` source instead).
+- **OAuth claude.ai connectors aren't reachable** — their tokens live in the OS keychain, out of reach of a standalone process. Use the matching CLI (`gh`, …), an HTTP endpoint, or a local stdio MCP server.
 
-## Zero-config defaults (never an empty bar)
+## Also available as a plugin
 
-A fresh install needs no setup:
-
-- The config is seeded with a **no-credentials starter pack** — local weather, a dad joke, and the top Hacker News story — so real snippets appear within seconds.
-- When the cache is empty or every snippet is exhausted, the renderer falls back to **built-in defaults** (jokes + "ask `/contextspin`…" tips) that rotate, so the bar is never blank — even offline or before the first poll.
-- A Claude Code **plugin** is also available (the [`mannutech` marketplace](https://github.com/mannutech/claude-plugins)) for those who prefer installing that way — it wraps this same package.
-
-## References
-
-- claude-depester (patcher inspiration): https://github.com/ominiverdi/claude-depester
-- Claude Code status line docs: https://code.claude.com/docs/en/statusline
-- Claude Code spinner issues: [#10420](https://github.com/anthropics/claude-code/issues/10420), [#13725](https://github.com/anthropics/claude-code/issues/13725), [#22668](https://github.com/anthropics/claude-code/issues/22668), [#27766](https://github.com/anthropics/claude-code/issues/27766), [#27976](https://github.com/anthropics/claude-code/issues/27976)
+A Claude Code plugin wraps this package, via the [`mannutech` marketplace](https://github.com/mannutech/claude-plugins) — for those who prefer installing that way. The curl line above needs neither.
 
 ## License
 

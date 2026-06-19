@@ -479,11 +479,17 @@ async function runUninject(opts = {}) {
 /**
  * The SessionStart hook command the `install` flow wires into the user settings
  * so ContextSpin self-heals every session (the curl install replicates what the
- * Claude Code plugin's hook does, without the marketplace). Runs from a neutral
- * dir so npx never resolves a confused local package (Exit 127).
+ * Claude Code plugin's hook does, without the marketplace).
+ *
+ * The hook is pinned to the EXACT version doing the install (never `@latest` or a
+ * range), so a future release never runs on the user's machine without them
+ * deliberately re-installing. Runs from a neutral dir so npx never resolves a
+ * confused local package (Exit 127).
+ * @returns {string}
  */
-const SESSIONSTART_HOOK_CMD =
-  'cd /tmp && npx --yes contextspin ensure >/dev/null 2>&1; exit 0';
+function sessionStartHookCmd() {
+  return `cd /tmp && npx --yes contextspin@${readVersion()} ensure >/dev/null 2>&1; exit 0`;
+}
 
 /**
  * Read+parse a JSON file, returning a fallback on any read/parse error.
@@ -526,12 +532,24 @@ function addSessionStartHook() {
   const obj = settings && typeof settings === 'object' ? settings : {};
   obj.hooks = obj.hooks && typeof obj.hooks === 'object' ? obj.hooks : {};
   const arr = Array.isArray(obj.hooks.SessionStart) ? obj.hooks.SessionStart : [];
-  if (arr.some(entryRunsContextspin)) return false;
-  arr.push({
+
+  const desired = sessionStartHookCmd();
+  const existing = arr.find(entryRunsContextspin);
+  const alreadyCurrent =
+    existing &&
+    Array.isArray(existing.hooks) &&
+    existing.hooks.some((h) => h && h.command === desired);
+  // Already exactly this command (same pinned version) — nothing to do.
+  if (alreadyCurrent) return false;
+
+  // Upsert: drop any prior ContextSpin entry (e.g. an older pinned version) and
+  // add the current one, so re-installing a newer version re-pins cleanly.
+  const others = arr.filter((e) => !entryRunsContextspin(e));
+  others.push({
     matcher: '',
-    hooks: [{ type: 'command', command: SESSIONSTART_HOOK_CMD, timeout: 15 }],
+    hooks: [{ type: 'command', command: desired, timeout: 15 }],
   });
-  obj.hooks.SessionStart = arr;
+  obj.hooks.SessionStart = others;
   fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(obj, null, 2));
   return true;
 }

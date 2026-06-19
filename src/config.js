@@ -34,8 +34,14 @@ export const LOG_PATH = path.join(STATE_DIR, "daemon.log");
 /** Path to the generated statusline bash wrapper. */
 export const STATUSLINE_SH = path.join(STATE_DIR, "statusline.sh");
 
-/** Path to the generated statusline Node render script. */
-export const STATUSLINE_JS = path.join(STATE_DIR, "statusline-render.js");
+/**
+ * Path to the generated statusline Node render script. Uses the `.mjs` extension
+ * so Node treats it as ESM regardless of version — the script lives in STATE_DIR
+ * (no package.json), and Node 18 has no automatic ESM detection, so a plain
+ * `.js` would fail to parse its `import` statements ("Cannot use import statement
+ * outside a module").
+ */
+export const STATUSLINE_JS = path.join(STATE_DIR, "statusline-render.mjs");
 
 /**
  * Path to the recorded prior statusLine commands (captured when we wrap an

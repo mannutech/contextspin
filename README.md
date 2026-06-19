@@ -14,38 +14,34 @@ ContextSpin is a **compositor and renderer, not a data layer.** It has no API cl
 - **CLI tools** already installed and authenticated on your machine (`gh`, `kubectl`, `aws`, your own scripts…)
 - **HTTP endpoints** you can already reach (internal dashboards, status APIs)
 
-ContextSpin polls those sources on a schedule, formats whatever they return into short one-line snippets, and injects the most relevant one into the Claude Code status bar. If a piece of data isn't reachable by a tool you already have, ContextSpin cannot show it — by design. The only runtime dependency is [`commander`](https://www.npmjs.com/package/commander).
+ContextSpin formats whatever your sources return into short one-line snippets and shows the most relevant one in the Claude Code status bar. If a piece of data isn't reachable by a tool you already have, ContextSpin cannot show it — by design. The only runtime dependency is [`commander`](https://www.npmjs.com/package/commander).
 
-## Architecture
+## Architecture (daemonless)
+
+There is **no background daemon by default**. The statusline render is the engine: it serves the cached snippet instantly, and only when a source is due does it kick off a detached one-shot refresh (lock-guarded so frequent renders never overlap). Nothing runs when you're not in Claude Code — idle cost is zero.
 
 ```
-  ┌─────────────────────────────────────────────────────────┐
-  │  SOURCES  (things you already have)                       │
-  │                                                           │
-  │   mcp   ──►  stdio MCP servers from ~/.claude.json        │
-  │   cli   ──►  shell commands (gh, kubectl, scripts...)     │
-  │   http  ──►  HTTP/JSON endpoints you can reach            │
-  └───────────────────────────┬─────────────────────────────┘
-                              │  poll on per-source cooldown
-                              ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │  POLLING DAEMON  (detached background process)            │
-  │   • runs each source, applies filter + format             │
-  │   • merges / dedups / prioritizes snippets                │
-  │   • writes  ~/.contextspin-cache.json   (atomic)          │
-  └───────────────────────────┬─────────────────────────────┘
-                              │  read cache
-                              ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │  INJECTOR  (statusline — non-destructive, composed)       │
-  │   statusline  ──►  ~/.contextspin/statusline.sh           │
-  │                    composed into ~/.claude/settings.json   │
-  │   patcher     ──►  rewrites spinner words (EXPERIMENTAL)   │
-  └───────────────────────────┬─────────────────────────────┘
+  Claude Code draws the status bar (every refreshInterval)
                               │
                               ▼
-            Claude Code status bar shows one snippet
+  ┌─────────────────────────────────────────────────────────┐
+  │  RENDER  ~/.contextspin/statusline.mjs                    │
+  │   1. read ~/.contextspin-cache.json                       │
+  │   2. print one snippet NOW (stale is fine) ───────────────┼──► status bar
+  │   3. if a source is past its cooldown AND no refresh is    │
+  │      in flight → spawn a detached one-shot refresh:        │
+  └───────────────────────────┬─────────────────────────────┘
+                              │  (background, non-blocking)
+                              ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  REFRESH  (one-shot)  src/refresh-entry.js               │
+  │   • runs each DUE source (cli / http / mcp), formats      │
+  │   • merges / dedups / prioritizes, records lastRun        │
+  │   • writes ~/.contextspin-cache.json  (atomic)           │
+  └─────────────────────────────────────────────────────────┘
 ```
+
+This is *stale-while-revalidate*: the bar is always fast (it never waits on the network), and freshness catches up in the background. A legacy always-on **daemon** is still available behind `injection.daemonless: false` — useful only if you poll stdio **MCP** sources, where a persistent connection beats per-render handshakes.
 
 The daemon and the injector are decoupled by the cache file: the daemon writes snippets, the injector reads them. Each runs on its own clock.
 
@@ -68,11 +64,11 @@ Prefer to do it yourself? `npx contextspin install` does the same thing. To remo
 
 ```bash
 npx contextspin setup     # create a config (add --yes to skip prompts)
-npx contextspin start     # start the background polling daemon
 npx contextspin inject    # wire snippets into the status bar
+# that's it — the render refreshes itself; no daemon to start
 ```
 
-Running `npx contextspin` with **no subcommand** is a shortcut: if no config exists it runs `setup`, otherwise it runs `start` followed by `inject` using the mode from your config.
+`npx contextspin install` is the recommended path (it also wires the self-healing SessionStart hook). Running `npx contextspin` with **no subcommand** sets up if unconfigured, otherwise wires + refreshes.
 
 </details>
 
@@ -187,6 +183,7 @@ ContextSpin reads one JSON file: `~/.contextspin.json` (override with the `CONTE
 | `injection.refresh` | number | seconds | `30` | Daemon poll interval and status-line refresh interval (seconds). |
 | `injection.maxVisible` | number | count | `5` | Global cap on snippets held in the cache. |
 | `injection.style` | boolean | — | `true` | Render the line in a styled box (cyan bars + italic). Set `false` for plain text. |
+| `injection.daemonless` | boolean | — | `true` | Render self-refreshes (stale-while-revalidate), no background process. Set `false` for the legacy always-on daemon. |
 | `snippets.deduplication` | boolean | — | `true` | Drop snippets with duplicate text when merging. |
 | `snippets.cooldownAfterShown` | number | count | `3` | A snippet stops being eligible once shown this many times. |
 | `snippets.priorityOrder` | string[] | source labels | `[]` | Earlier labels sort first (case-insensitive); unlisted sort last. |
@@ -229,15 +226,14 @@ Key facts:
 
 Restore the originals with `contextspin uninject --mode patcher` (or `inject --mode both` / `uninject --mode both` to do both at once). A backup with the suffix `.contextspin.backup` is created before any install is touched.
 
-## Daemon and cache
+## Refresh and cache
 
-`contextspin start` spawns a **detached** background process (the daemon). It writes its PID to `~/.contextspin/daemon.pid` and logs to `~/.contextspin/daemon.log`. The loop:
+By default there is **no background process**. Each time the status bar draws, the render:
 
-1. For each source whose `cooldown` has elapsed, runs it, applies the filter, formats records, and slices to `maxSnippets`.
-2. Merges the fresh snippets into the existing set: preserves `shownCount` for matching text, optionally dedups, sorts by `priorityOrder` then by recency, and caps to `injection.maxVisible`.
-3. Atomically writes the cache, then sleeps `injection.refresh` seconds.
+1. Prints the current cached snippet immediately (stale is fine).
+2. If any source is past its `cooldown` and no refresh is already in flight (a lock at `~/.contextspin/refresh.lock`, TTL 60s), spawns a **detached one-shot refresh**. That refresh runs only the due sources, merges into the existing set (preserves `shownCount` for matching text, optionally dedups, sorts by `priorityOrder` then recency, caps to `injection.maxVisible`), records per-source `lastRun`, and atomically writes the cache.
 
-`stop` / `restart` manage the process; `status` reports whether it's running and lists the current snippets.
+Set `injection.daemonless: false` to use the **legacy daemon** instead: `contextspin start` spawns a detached background process (PID at `~/.contextspin/daemon.pid`, logs at `~/.contextspin/daemon.log`) that polls on `injection.refresh` and writes the same cache. Use this only if you poll stdio MCP sources.
 
 ### Cache file format (`~/.contextspin-cache.json`)
 
@@ -252,27 +248,26 @@ Restore the originals with `contextspin uninject --mode patcher` (or `inject --m
       "fetchedAt": "2026-06-17T09:00:00.000Z",
       "shownCount": 0
     }
-  ]
+  ],
+  "meta": { "lastRun": { "2": 1781860451773 } }
 }
 ```
 
-`shownCount` is incremented by the status-line renderer each time a snippet is displayed; once it reaches `cooldownAfterShown` the snippet is no longer shown.
+`shownCount` is incremented by the render each time a snippet is displayed; once it reaches `cooldownAfterShown` the snippet is no longer shown. `meta.lastRun` maps `sourceId → last poll (epoch ms)` so the daemonless refresh honors per-source cooldowns across runs.
 
 ## CLI commands
 
 | Command | What it does |
 |---------|--------------|
-| `contextspin install` | **One-shot install:** wire a self-healing SessionStart hook, create the config, wire the statusline, and start the daemon. (This is what the curl script runs.) |
-| `contextspin uninstall` | **Full teardown:** remove the hook, restore your prior statusline in **every** scope it wired, and stop the daemon. |
+| `contextspin install` | **One-shot install:** wire a self-healing SessionStart hook, create the config, and wire the statusline. (This is what the curl script runs.) |
+| `contextspin uninstall` | **Full teardown:** remove the hook, restore your prior statusline in **every** scope it wired, and stop any daemon. |
 | `contextspin setup [--yes]` | Create `~/.contextspin.json` (interactive, or a detected config with `--yes` / non-TTY). |
-| `contextspin start` | Start the detached polling daemon. |
-| `contextspin stop` | Stop the daemon. |
-| `contextspin restart` | Stop then start. |
-| `contextspin status` | Show daemon state and the current cached snippets (source, age, shown count). |
-| `contextspin ensure` | Idempotent: create config + wire statusline + start daemon (run by the SessionStart hook each session). |
+| `contextspin status` | Show the engine, and the current cached snippets (source, age, shown count). |
+| `contextspin ensure` | Idempotent: create config + wire statusline (run by the SessionStart hook each session). |
 | `contextspin inject [--mode <m>]` | Install just the injector. `<m>` overrides `injection.mode` (`statusline` / `patcher` / `both`). |
 | `contextspin uninject [--mode <m>]` | Reverse just the injector. |
-| `contextspin` *(no subcommand)* | `setup` if unconfigured, otherwise `start` then `inject`. |
+| `contextspin start` / `stop` / `restart` | Manage the **legacy daemon** (only when `injection.daemonless: false`). |
+| `contextspin` *(no subcommand)* | `setup` if unconfigured, otherwise wire + refresh. |
 
 ## High-impact snippets
 

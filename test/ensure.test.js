@@ -2,13 +2,10 @@
 //
 // We run the CLI as a child process with a fully TEMP HOME plus
 // CONTEXTSPIN_CONFIG / CONTEXTSPIN_CACHE overrides, so it can never touch the
-// real ~/.claude, ~/.contextspin.json, or the real daemon. To keep the run
-// hermetic we PRE-SEED state so only the config-bootstrap branch does work:
-//   - a daemon.pid file containing THIS test process's pid (alive) so
-//     isDaemonRunning() is true and no daemon is ever spawned;
-//   - a settings.json whose statusLine already points at our wrapper so the
-//     statusline-wiring branch is skipped.
-// We then assert the config file was created with a valid detected shape.
+// real ~/.claude or ~/.contextspin.json. The engine is daemonless by default, so
+// ensure never spawns a background process; we PRE-SEED a settings.json whose
+// statusLine already points at our wrapper so the statusline-wiring branch is a
+// no-op, then assert the config file was created with a valid detected shape.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -30,9 +27,6 @@ test('ensure creates a config when none exists (hermetic, no daemon/settings tou
   const claudeDir = path.join(home, '.claude');
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(claudeDir, { recursive: true });
-
-  // Pre-seed a live daemon pid (our own) so ensure never spawns a daemon.
-  fs.writeFileSync(path.join(stateDir, 'daemon.pid'), String(process.pid));
 
   // Pre-seed settings whose statusLine already points at our wrapper so the
   // statusline-wiring branch is a no-op.
@@ -83,7 +77,6 @@ test('ensure is idempotent: a second run reports already set up', () => {
   const claudeDir = path.join(home, '.claude');
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(claudeDir, { recursive: true });
-  fs.writeFileSync(path.join(stateDir, 'daemon.pid'), String(process.pid));
   const wrapper = path.join(stateDir, 'statusline.sh');
   fs.writeFileSync(
     path.join(claudeDir, 'settings.json'),

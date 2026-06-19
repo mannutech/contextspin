@@ -31,6 +31,17 @@ export const PID_PATH = path.join(STATE_DIR, "daemon.pid");
 /** Path to the daemon log file. */
 export const LOG_PATH = path.join(STATE_DIR, "daemon.log");
 
+/**
+ * Lock file for the DAEMONLESS engine: the render script triggers a detached
+ * one-shot refresh when a source is due, guarded by this lock so frequent
+ * renders never spawn overlapping refreshes. Holds a timestamp; stale locks
+ * (older than REFRESH_LOCK_TTL_MS) are ignored.
+ */
+export const REFRESH_LOCK_PATH = path.join(STATE_DIR, "refresh.lock");
+
+/** A refresh lock older than this (ms) is considered stale and overridable. */
+export const REFRESH_LOCK_TTL_MS = 60_000;
+
 /** Path to the generated statusline bash wrapper. */
 export const STATUSLINE_SH = path.join(STATE_DIR, "statusline.sh");
 
@@ -136,6 +147,15 @@ export const DEFAULTS = {
   injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
   snippets: { deduplication: true, cooldownAfterShown: 3, priorityOrder: [] },
 };
+
+/**
+ * Whether the DAEMONLESS engine is the default. When true, no background daemon
+ * runs: the statusline render does stale-while-revalidate — it serves the cached
+ * snippet instantly and triggers a detached one-shot refresh when a source is
+ * due. Idle cost is then zero (nothing runs unless the bar is being drawn).
+ * Honored unless a config explicitly sets `injection.daemonless`.
+ */
+export const DEFAULT_DAEMONLESS = true;
 
 /** Per-source defaults applied when a field is omitted. */
 export const SOURCE_DEFAULTS = { cooldown: 300, maxSnippets: 2 };

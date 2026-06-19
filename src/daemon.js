@@ -25,13 +25,16 @@ export async function readCache() {
   try {
     const raw = await fsp.readFile(CACHE_PATH, "utf8");
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return { updatedAt: null, snippets: [] };
+    if (!parsed || typeof parsed !== "object") return { updatedAt: null, snippets: [], meta: {} };
     return {
       updatedAt: parsed.updatedAt ?? null,
       snippets: Array.isArray(parsed.snippets) ? parsed.snippets : [],
+      // `meta.lastRun` maps sourceId -> last poll epoch ms, so the daemonless
+      // one-shot refresh can honor per-source cooldowns across separate runs.
+      meta: parsed.meta && typeof parsed.meta === "object" ? parsed.meta : {},
     };
   } catch {
-    return { updatedAt: null, snippets: [] };
+    return { updatedAt: null, snippets: [], meta: {} };
   }
 }
 
@@ -157,6 +160,53 @@ export async function pollOnce(config, runtime) {
 
   runtime.snippets = mergeSnippets(runtime.snippets, flattened, config);
   return runtime.snippets;
+}
+
+/**
+ * Run ONE refresh pass for the daemonless engine and exit. Unlike the daemon
+ * loop this keeps no in-memory state: it reads the cache (snippets +
+ * meta.lastRun), polls only the sources whose cooldown has elapsed, keeps the
+ * existing snippets for sources that are not yet due, merges, and writes the
+ * cache back (including the updated per-source lastRun). Errors for one source
+ * never drop the others' cached snippets.
+ *
+ * @param {{configPath?: string}} [opts]
+ * @returns {Promise<void>}
+ */
+export async function runRefreshOnce(opts = {}) {
+  const config = await loadConfig(opts.configPath);
+  const cache = await readCache();
+  const lastRun = cache.meta && typeof cache.meta.lastRun === "object" ? { ...cache.meta.lastRun } : {};
+  const now = Date.now();
+
+  // Group existing cached snippets by source so not-yet-due sources persist.
+  const bySource = {};
+  for (const s of cache.snippets) {
+    if (!s) continue;
+    (bySource[s.sourceId] ||= []).push(s);
+  }
+
+  for (const source of config.sources) {
+    const last = lastRun[source.id] || 0;
+    if (now - last >= source.cooldown * 1000) {
+      try {
+        bySource[source.id] = await runSource(source, {});
+        lastRun[source.id] = Date.now();
+      } catch (err) {
+        console.error(`source "${source.label}" (#${source.id}) failed: ${err.message}`);
+        // keep whatever was cached for this source
+      }
+    }
+  }
+
+  const flattened = [];
+  for (const source of config.sources) {
+    const bucket = bySource[source.id];
+    if (Array.isArray(bucket)) flattened.push(...bucket);
+  }
+
+  const snippets = mergeSnippets(cache.snippets, flattened, config);
+  await writeCache({ updatedAt: nowISO(), snippets, meta: { lastRun } });
 }
 
 /**

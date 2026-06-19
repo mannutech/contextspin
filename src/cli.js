@@ -13,6 +13,7 @@ import {
   CONFIG_PATH,
   STATUSLINE_SH,
   CLAUDE_SETTINGS_PATH,
+  DEFAULT_DAEMONLESS,
   configExists,
   loadConfig,
   saveConfig,
@@ -24,6 +25,7 @@ import {
   stopDaemon,
   isDaemonRunning,
   readCache,
+  runRefreshOnce,
 } from './daemon.js';
 import {
   installStatusline,
@@ -264,7 +266,20 @@ async function runEnsure() {
       if (!wasOurs) did.push('wired statusline');
     }
 
-    if (!isDaemonRunning().running) {
+    // DAEMONLESS (default): the render revalidates itself, so no background
+    // process is started. Only the legacy daemon engine needs a daemon.
+    const daemonless =
+      config && config.injection && typeof config.injection.daemonless === 'boolean'
+        ? config.injection.daemonless
+        : DEFAULT_DAEMONLESS;
+    if (daemonless) {
+      // Upgrading from the daemon engine? Stop the now-redundant background
+      // process so it doesn't linger after the switch.
+      if (isDaemonRunning().running) {
+        await stopDaemon();
+        did.push('stopped legacy daemon');
+      }
+    } else if (!isDaemonRunning().running) {
       startDaemonDetached();
       did.push('started daemon');
     }
@@ -327,15 +342,44 @@ async function runRestart() {
 }
 
 /**
+ * Force a one-shot refresh now (the daemonless "refresh now"): polls every due
+ * source and rewrites the cache. Works regardless of engine.
+ * @returns {Promise<void>}
+ */
+async function runRefresh() {
+  if (!configExists()) {
+    printSetupHint();
+    process.exit(1);
+    return;
+  }
+  await runRefreshOnce();
+  console.log('ContextSpin: refreshed.');
+}
+
+/**
  * Print the daemon running state plus the current cache contents.
  * @returns {Promise<void>}
  */
 async function runStatus() {
+  // Report the active engine. In daemonless mode (the default) there is no
+  // background process by design — the render revalidates the cache itself.
+  let daemonless = DEFAULT_DAEMONLESS;
+  try {
+    const cfg = await loadConfig();
+    if (cfg && cfg.injection && typeof cfg.injection.daemonless === 'boolean') {
+      daemonless = cfg.injection.daemonless;
+    }
+  } catch {
+    // no/invalid config -> assume the default engine
+  }
+
   const { running, pid } = isDaemonRunning();
-  if (running) {
-    console.log(`Daemon: running (pid ${pid})`);
+  if (daemonless) {
+    console.log('Engine: daemonless (statusline self-refreshes; no background process)');
+  } else if (running) {
+    console.log(`Engine: daemon (running, pid ${pid})`);
   } else {
-    console.log('Daemon: stopped');
+    console.log('Engine: daemon (stopped)');
   }
 
   const cache = await readCache();
@@ -591,8 +635,13 @@ function buildProgram() {
     .action(action(async () => runRestart()));
 
   program
+    .command('refresh')
+    .description('Force a one-shot refresh of all due sources now')
+    .action(action(async () => runRefresh()));
+
+  program
     .command('status')
-    .description('Show daemon state and cached snippets')
+    .description('Show the engine and cached snippets')
     .action(action(async () => runStatus()));
 
   program

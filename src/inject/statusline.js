@@ -34,7 +34,11 @@ import {
   CLAUDE_SETTINGS_PATH,
   DEFAULT_SNIPPETS,
   WIRED_STATUSLINES_PATH,
+  REFRESH_LOCK_PATH,
+  REFRESH_LOCK_TTL_MS,
+  DEFAULT_DAEMONLESS,
 } from "../config.js";
+import { fileURLToPath } from "node:url";
 
 /**
  * Build the source text of the Node ESM render script that Claude Code invokes
@@ -70,12 +74,16 @@ import {
  * @param {string} prevPath - Absolute path to the prev-statusline MAP JSON file.
  * @returns {string} The ESM source of the render script.
  */
-function buildRenderScript(cachePath, configPath, prevPath) {
+function buildRenderScript(cachePath, configPath, prevPath, opts = {}) {
   const CACHE = JSON.stringify(cachePath);
   const CONFIG = JSON.stringify(configPath);
   const PREV = JSON.stringify(prevPath);
   const DEFAULTS = JSON.stringify(DEFAULT_SNIPPETS);
-  return `// contextspin statusline-render.js (generated) — composes any prior
+  const DAEMONLESS = opts.daemonless ? "true" : "false";
+  const REFRESH_ENTRY = JSON.stringify(opts.refreshEntry || "");
+  const LOCK = JSON.stringify(opts.lockPath || "");
+  const LOCK_TTL = String(typeof opts.lockTtlMs === "number" ? opts.lockTtlMs : 60000);
+  return `// contextspin statusline-render.mjs (generated) — composes any prior
 // statusline (looked up per-project) with one ContextSpin snippet line. MUST
 // always exit 0 and never lose the prior statusline's output, so the user's
 // status bar never breaks.
@@ -86,6 +94,14 @@ const CACHE_PATH = ${CACHE};
 const CONFIG_PATH = ${CONFIG};
 const PREV_STATUSLINE_PATH = ${PREV};
 const DEFAULT_SNIPPETS = ${DEFAULTS};
+
+// DAEMONLESS engine: when true, this render does stale-while-revalidate — it
+// serves the cached snippet instantly and triggers a detached one-shot refresh
+// when a source is due (lock-guarded so frequent renders never overlap).
+const DAEMONLESS = ${DAEMONLESS};
+const REFRESH_ENTRY = ${REFRESH_ENTRY};
+const REFRESH_LOCK_PATH = ${LOCK};
+const REFRESH_LOCK_TTL_MS = ${LOCK_TTL};
 
 /** Buffer ALL of stdin into a Buffer. Resolves on end/close/error/timeout. */
 function readStdin() {
@@ -341,6 +357,65 @@ function styleLine(text) {
   return BAR + "┃" + RESET + " " + BODY + text + RESET + " " + BAR + "┃" + RESET;
 }
 
+/**
+ * DAEMONLESS stale-while-revalidate: if any source is past its cooldown and no
+ * fresh refresh is in flight, spawn a detached one-shot refresh. Never blocks
+ * the render (fire-and-forget) and never throws.
+ */
+function maybeTriggerRefresh() {
+  if (!DAEMONLESS || !REFRESH_ENTRY) return;
+  try {
+    // Is any source due? (sourceId is the source's index in the config.)
+    let cfg;
+    try {
+      cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    } catch {
+      return;
+    }
+    const sources = Array.isArray(cfg && cfg.sources) ? cfg.sources : [];
+    if (sources.length === 0) return;
+
+    let lastRun = {};
+    try {
+      const c = JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
+      if (c && c.meta && typeof c.meta.lastRun === "object") lastRun = c.meta.lastRun;
+    } catch {
+      // no cache yet -> everything is due
+    }
+
+    const now = Date.now();
+    let due = false;
+    for (let i = 0; i < sources.length; i++) {
+      const cd = (typeof sources[i].cooldown === "number" ? sources[i].cooldown : 300) * 1000;
+      if (now - (lastRun[i] || 0) >= cd) {
+        due = true;
+        break;
+      }
+    }
+    if (!due) return;
+
+    // Skip if a fresh refresh is already in flight.
+    try {
+      const t = Number(fs.readFileSync(REFRESH_LOCK_PATH, "utf8"));
+      if (Number.isFinite(t) && now - t < REFRESH_LOCK_TTL_MS) return;
+    } catch {
+      // no/!readable lock -> proceed
+    }
+
+    const child = spawn(process.execPath, [REFRESH_ENTRY], {
+      detached: true,
+      stdio: "ignore",
+      env: Object.assign({}, process.env, {
+        CONTEXTSPIN_CONFIG: CONFIG_PATH,
+        CONTEXTSPIN_CACHE: CACHE_PATH,
+      }),
+    });
+    child.unref();
+  } catch {
+    // never let revalidation break the render
+  }
+}
+
 /** Write a string to stdout, awaiting the flush callback. */
 function writeOut(text) {
   return new Promise((resolve) => {
@@ -372,6 +447,14 @@ async function main() {
     line = styleLine(contextSpinLine());
   } catch {
     line = "";
+  }
+
+  // (b2) DAEMONLESS: kick off a background refresh if anything is due. Detached
+  // and non-blocking — the line above is served immediately from cache.
+  try {
+    maybeTriggerRefresh();
+  } catch {
+    // ignore
   }
 
   // (c) Compose: prior output, then our line on its own line beneath. We only
@@ -601,7 +684,20 @@ export async function installStatusline(config, opts = {}) {
   await writePrevMap(map);
 
   // (3) Render script (knows the prev-statusline MAP path) + bash wrapper.
-  const renderSource = buildRenderScript(CACHE_PATH, CONFIG_PATH, PREV_STATUSLINE_PATH);
+  // Resolve whether the DAEMONLESS engine is active (config opt-out wins) and the
+  // absolute path to the one-shot refresh entry, so the render can revalidate
+  // itself with no background daemon.
+  const daemonless =
+    config && config.injection && typeof config.injection.daemonless === "boolean"
+      ? config.injection.daemonless
+      : DEFAULT_DAEMONLESS;
+  const refreshEntry = fileURLToPath(new URL("../refresh-entry.js", import.meta.url));
+  const renderSource = buildRenderScript(CACHE_PATH, CONFIG_PATH, PREV_STATUSLINE_PATH, {
+    daemonless,
+    refreshEntry,
+    lockPath: REFRESH_LOCK_PATH,
+    lockTtlMs: REFRESH_LOCK_TTL_MS,
+  });
   await fsp.writeFile(STATUSLINE_JS, renderSource);
 
   // Silence stderr so node warnings never reach the status bar.

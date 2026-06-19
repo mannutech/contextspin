@@ -67,7 +67,10 @@ test('installStatusline composes a prior USER statusline above the ContextSpin l
     configPath,
     JSON.stringify({
       sources: [{ type: 'cli', command: 'echo hi', format: '{{ value }}' }],
-      injection: { mode: 'statusline', refresh: 30 },
+      // daemonless:false so the generated render never spawns a background
+      // refresh into this temp HOME (it would race the cleanup -> ENOTEMPTY).
+      // These tests exercise composition, not the refresh engine.
+      injection: { mode: 'statusline', refresh: 30, daemonless: false },
       snippets: { cooldownAfterShown: 3 },
     }),
   );
@@ -184,7 +187,10 @@ test('installStatusline is SCOPE-AWARE: project repo statusLine composed via set
     configPath,
     JSON.stringify({
       sources: [{ type: 'cli', command: 'echo hi', format: '{{ value }}' }],
-      injection: { mode: 'statusline', refresh: 30 },
+      // daemonless:false so the generated render never spawns a background
+      // refresh into this temp HOME (it would race the cleanup -> ENOTEMPTY).
+      // These tests exercise composition, not the refresh engine.
+      injection: { mode: 'statusline', refresh: 30, daemonless: false },
       snippets: { cooldownAfterShown: 3 },
     }),
   );

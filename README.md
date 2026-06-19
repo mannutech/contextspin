@@ -8,6 +8,12 @@ curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.
 
 Requires Node.js ≥ 18. MIT licensed. The only runtime dependency is [`commander`](https://www.npmjs.com/package/commander).
 
+![Install](screenshots/install.svg)
+
+![Status command](screenshots/status-command.svg)
+
+![Statusline](screenshots/statusline.svg)
+
 ## It does NOT fetch data
 
 ContextSpin is a **renderer, not a data layer** — no API clients, no auth flows, no integrations of its own. It aggregates from sources you already have:

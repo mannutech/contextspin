@@ -568,6 +568,32 @@ async function addWired(key) {
 }
 
 /**
+ * Whether a statusLine command refers to a ContextSpin wrapper.
+ *
+ * Matches this machine's exact wrapper path AND, defensively, any command whose
+ * first token ends in `.contextspin/statusline.sh` regardless of its absolute
+ * prefix. The suffix match is essential for CROSS-MACHINE teardown: a wrapper
+ * wired inside a devcontainer (HOME=/home/node) writes
+ * `/home/node/.contextspin/statusline.sh` into a project's settings.local.json,
+ * which is then mounted onto the host (e.g. a Mac). On the host that absolute
+ * path never equals this machine's STATUSLINE_SH, so an exact-match check would
+ * fail to recognize — and therefore never clean up — the stale, broken wrapper,
+ * leaving an empty status bar (settings.local.json outranks the tracked file).
+ *
+ * @param {*} command
+ * @returns {boolean}
+ */
+function isOurWrapperCommand(command) {
+  if (typeof command !== "string") return false;
+  const c = command.trim();
+  if (!c) return false;
+  if (c === STATUSLINE_SH) return true;
+  // Compare the first whitespace-delimited token (the path), tolerating args.
+  const first = c.split(/\s+/)[0].replace(/\\/g, "/");
+  return first.endsWith("/.contextspin/statusline.sh");
+}
+
+/**
  * Resolve the statusLine command currently configured in a settings file (if
  * any), ignoring our own wrapper. Returns null when the file has no usable
  * non-ours statusLine command.
@@ -583,7 +609,7 @@ function priorFromSettings(settingsPath) {
     typeof sl === "object" &&
     typeof sl.command === "string" &&
     sl.command &&
-    sl.command !== STATUSLINE_SH
+    !isOurWrapperCommand(sl.command)
   ) {
     return { command: sl.command, type: sl.type || "command" };
   }
@@ -664,7 +690,7 @@ export async function installStatusline(config, opts = {}) {
   // excludes it). When there is no prior, drop any stale entry for this KEY.
   const map = readPrevMap();
   let composed = false;
-  if (prior && prior.command && prior.command !== STATUSLINE_SH) {
+  if (prior && prior.command && !isOurWrapperCommand(prior.command)) {
     // Detected a real prior at this scope -> record/refresh it, so a repo that
     // later changes its own statusLine is picked up on the next `ensure`.
     map[key] = { command: prior.command, type: prior.type || "command" };
@@ -722,7 +748,7 @@ export async function installStatusline(config, opts = {}) {
     typeof targetExisting === "object" &&
     typeof targetExisting.command === "string" &&
     targetExisting.command &&
-    targetExisting.command !== STATUSLINE_SH
+    !isOurWrapperCommand(targetExisting.command)
   ) {
     const backupPath = targetPath + ".contextspin.bak";
     if (!fs.existsSync(backupPath)) {
@@ -850,7 +876,9 @@ export async function uninstallStatusline(opts = {}) {
 
   const current = settings.statusLine;
   const isOurs =
-    current && typeof current === "object" && current.command === STATUSLINE_SH;
+    current &&
+    typeof current === "object" &&
+    isOurWrapperCommand(current.command);
 
   if (!isOurs) {
     await removePrevEntry(key);
@@ -866,7 +894,17 @@ export async function uninstallStatusline(opts = {}) {
   const backupPath = targetPath + ".contextspin.bak";
   if (fs.existsSync(backupPath)) {
     const backup = await readJsonSafe(backupPath, null);
-    if (backup && typeof backup === "object") {
+    // Only restore a backup whose statusLine is NOT itself a ContextSpin wrapper.
+    // A backup captured on another machine can contain a stale cross-machine
+    // wrapper; restoring it would just re-introduce the broken path. In that
+    // case, drop the useless backup and fall through to deleting our key.
+    const backupSl =
+      backup && typeof backup === "object" ? backup.statusLine : null;
+    const backupIsStaleWrapper =
+      backupSl &&
+      typeof backupSl === "object" &&
+      isOurWrapperCommand(backupSl.command);
+    if (backup && typeof backup === "object" && !backupIsStaleWrapper) {
       await writeJsonAtomic(targetPath, backup);
       try {
         await fsp.unlink(backupPath);
@@ -881,6 +919,12 @@ export async function uninstallStatusline(opts = {}) {
         scope,
         note: "Restored previous Claude settings from backup.",
       };
+    }
+    // Stale/unusable backup: discard it so it can't mislead a future restore.
+    try {
+      await fsp.unlink(backupPath);
+    } catch {
+      // best effort
     }
   }
 
@@ -910,8 +954,24 @@ export async function uninstallStatusline(opts = {}) {
  * @returns {Promise<UninstallStatuslineResult[]>}
  */
 export async function uninstallAllStatuslines() {
-  // Always include the user scope (""), plus every recorded project key.
-  const keys = Array.from(new Set(["", ...readWiredList()]));
+  // Always include the user scope (""), every recorded project key, AND the
+  // current project dir (cwd + $CLAUDE_PROJECT_DIR). The current dir matters for
+  // CROSS-MACHINE teardown: a wiring done on another machine (e.g. a
+  // devcontainer) is absent from THIS machine's registry, so without explicitly
+  // inspecting the dir the user runs uninstall from, its stale
+  // settings.local.json wrapper would never be found. Canonicalize so a dir that
+  // is also in the registry dedups instead of being torn down twice.
+  const canon = (d) => {
+    try {
+      return fs.realpathSync(d);
+    } catch {
+      return path.resolve(d);
+    }
+  };
+  const here = [process.cwd(), process.env.CLAUDE_PROJECT_DIR]
+    .filter((d) => typeof d === "string" && d)
+    .map(canon);
+  const keys = Array.from(new Set(["", ...readWiredList(), ...here]));
   const results = [];
   for (const key of keys) {
     const projectDir = key === "" ? undefined : key;

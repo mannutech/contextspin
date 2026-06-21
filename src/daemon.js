@@ -53,21 +53,28 @@ export async function writeCache(state) {
 }
 
 /**
- * Merge freshly fetched snippets into the existing set. Pure (no mutation of inputs).
+ * Build the ordered cache list from the freshly-assembled snippet set. Pure (no
+ * mutation of inputs).
  *
- * - Preserves shownCount from oldSnippets for any new snippet whose text matches.
+ * - Each snippet keeps its OWN shownCount. shownCount is NOT inherited from
+ *   oldSnippets by text: callers already place cached (non-due) snippets — which
+ *   carry their accumulated shownCount — directly into newSnippets, and a
+ *   freshly-polled snippet must start at 0 even if its text matches a retired
+ *   old one (otherwise unchanged data, e.g. same weather, would be suppressed
+ *   forever). oldSnippets is retained only as the documented "previous state"
+ *   the regression test guards against leaking from.
  * - If config.snippets.deduplication, dedup by text (keeps the first occurrence).
  * - Sorts by priority: index of snippet.source within config.snippets.priorityOrder
  *   (case-insensitive; not-found sorts last), then by fetchedAt descending. Stable.
  * - Caps the result to config.injection.maxVisible.
  *
- * @param {import("./runner.js").Snippet[]} oldSnippets
+ * @param {import("./runner.js").Snippet[]} oldSnippets - Previous state; not used
+ *   for shownCount inheritance (see above).
  * @param {import("./runner.js").Snippet[]} newSnippets
  * @param {object} config - Normalized config (snippets + injection sections).
  * @returns {import("./runner.js").Snippet[]}
  */
 export function mergeSnippets(oldSnippets, newSnippets, config) {
-  const oldList = Array.isArray(oldSnippets) ? oldSnippets : [];
   const newList = Array.isArray(newSnippets) ? newSnippets : [];
 
   // Fresh snippets (from a re-polled source) always start at shownCount 0.

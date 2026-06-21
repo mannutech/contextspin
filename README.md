@@ -93,8 +93,8 @@ One JSON file, `~/.contextspin.json` (override with `CONTEXTSPIN_CONFIG`); cache
   "sources": [
     { "type": "cli", "command": "gh pr list --json title --limit 3", "format": "PR: {{ title }}" }
   ],
-  "injection": { "mode": "statusline", "refresh": 30, "maxVisible": 5 },
-  "snippets": { "deduplication": true, "cooldownAfterShown": 3, "priorityOrder": ["incident", "ci", "github"] }
+  "injection": { "mode": "statusline", "refresh": 30, "maxVisible": 20 },
+  "snippets": { "deduplication": true, "cooldownAfterShown": 5, "priorityOrder": ["incident", "ci", "github"] }
 }
 ```
 
@@ -108,12 +108,12 @@ One JSON file, `~/.contextspin.json` (override with `CONTEXTSPIN_CONFIG`); cache
 | `sources[].cooldown` | `300` | Min seconds between polls of this source |
 | `sources[].maxSnippets` | `2` | Max snippets kept per poll |
 | `injection.refresh` | `30` | Status-bar refresh interval, seconds |
-| `injection.maxVisible` | `5` | Cap on snippets held in the cache |
+| `injection.maxVisible` | `20` | Cap on snippets held in the cache (rotated one at a time) |
 | `injection.style` | `true` | Styled box (cyan bars + italic); `false` for plain text |
 | `injection.daemonless` | `true` | Self-refreshing render; `false` for the legacy daemon |
 | `injection.mode` | `statusline` | `statusline` \| `patcher` \| `both` |
 | `snippets.deduplication` | `true` | Drop duplicate-text snippets when merging |
-| `snippets.cooldownAfterShown` | `3` | A snippet stops showing after this many displays |
+| `snippets.cooldownAfterShown` | `5` | A snippet stops showing after this many displays |
 | `snippets.priorityOrder` | `[]` | Source labels sorted first (case-insensitive); rest last |
 
 **Filters** are a single safe comparison (no `eval`): the expression is interpolated, then parsed as `LEFT OP RIGHT` where `OP` is `==`, `!=`, `>=`, `<=`, `>`, `<`, or `includes`. No `&&`/`||`.

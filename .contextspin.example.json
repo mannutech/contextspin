@@ -12,11 +12,11 @@
   "injection": {
     "mode": "statusline",
     "refresh": 30,
-    "maxVisible": 5
+    "maxVisible": 20
   },
   "snippets": {
     "deduplication": true,
-    "cooldownAfterShown": 3,
+    "cooldownAfterShown": 5,
     "priorityOrder": ["review", "incident", "ci", "slack", "calendar", "github", "gitlab", "jira"]
   }
 }

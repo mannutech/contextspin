@@ -24,7 +24,7 @@ function tmpPath(suffix = '.json') {
 test('DEFAULTS and SOURCE_DEFAULTS expose the documented shape', () => {
   assert.equal(DEFAULTS.injection.mode, 'statusline');
   assert.equal(DEFAULTS.injection.refresh, 30);
-  assert.equal(DEFAULTS.injection.maxVisible, 5);
+  assert.equal(DEFAULTS.injection.maxVisible, 20);
   assert.equal(DEFAULTS.snippets.deduplication, true);
   assert.equal(DEFAULTS.snippets.cooldownAfterShown, 5);
   assert.deepEqual(DEFAULTS.snippets.priorityOrder, []);
@@ -44,7 +44,7 @@ test('defaultConfig returns the documented shape', () => {
     cfg.sources.map((s) => s.label),
     ['X', 'weather', 'joke', 'hackernews', 'ai-papers', 'devto', 'quote'],
   );
-  assert.deepEqual(cfg.injection, { mode: 'statusline', refresh: 30, maxVisible: 5 });
+  assert.deepEqual(cfg.injection, { mode: 'statusline', refresh: 30, maxVisible: 20 });
   assert.equal(cfg.snippets.deduplication, true);
   assert.equal(cfg.snippets.cooldownAfterShown, 5);
   assert.deepEqual(cfg.snippets.priorityOrder, [
@@ -90,7 +90,7 @@ test('normalizeConfig fills injection/snippet defaults', () => {
   const out = normalizeConfig({ sources: [{ type: 'cli', command: 'echo hi', format: '{{ value }}' }] });
   assert.equal(out.injection.mode, 'statusline');
   assert.equal(out.injection.refresh, 30);
-  assert.equal(out.injection.maxVisible, 5);
+  assert.equal(out.injection.maxVisible, 20);
   assert.equal(out.snippets.deduplication, true);
   assert.equal(out.snippets.cooldownAfterShown, 5);
 });

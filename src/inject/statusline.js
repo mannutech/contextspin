@@ -56,7 +56,7 @@ import { fileURLToPath } from "node:url";
  *    timeout (SIGKILL on timeout), and prints that output VERBATIM first (it may
  *    be multiple lines). Any failure here is swallowed.
  *  - Reads the cache (tolerating a missing file).
- *  - Reads `cooldownAfterShown` from the config (fallback 3).
+ *  - Reads `cooldownAfterShown` from the config (fallback 5).
  *  - Selects snippets where shownCount < cooldownAfterShown, picks the one with
  *    the LOWEST shownCount then the most recent fetchedAt, bumps its shownCount,
  *    and writes the cache back atomically.
@@ -299,8 +299,8 @@ function contextSpinLine() {
   if (!cache || typeof cache !== "object") cache = {};
   const snippets = Array.isArray(cache.snippets) ? cache.snippets : [];
 
-  // cooldownAfterShown from config (fallback 3).
-  let cooldownAfterShown = 3;
+  // cooldownAfterShown from config (fallback 5).
+  let cooldownAfterShown = 5;
   try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
     const v = cfg && cfg.snippets && cfg.snippets.cooldownAfterShown;

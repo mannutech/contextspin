@@ -129,7 +129,10 @@ export const STARTER_SOURCES = [
     format: "😄 {{text}}",
     label: "joke",
     cooldown: 1800,
-    maxSnippets: 3,
+    // icanhazdadjoke returns ONE joke per request, and each poll REPLACES the
+    // source's cached snippets (buckets are not accumulated), so maxSnippets > 1
+    // would do nothing here. A fresh joke arrives every cooldown instead.
+    maxSnippets: 1,
   },
   {
     type: "http",
@@ -168,7 +171,12 @@ export const STARTER_SOURCES = [
 
 /** Default top-level config sections. */
 export const DEFAULTS = {
-  injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
+  // maxVisible caps how many snippets are HELD in the cache (the render shows one
+  // at a time, rotating by lowest shownCount). It must comfortably exceed the
+  // number of snippets the configured sources produce, or the lowest-priority
+  // sources get dropped from the cache entirely and never rotate in. The starter
+  // pack alone yields ~12, so the default is generous.
+  injection: { mode: "statusline", refresh: 30, maxVisible: 20 },
   snippets: { deduplication: true, cooldownAfterShown: 5, priorityOrder: [] },
 };
 
@@ -273,7 +281,7 @@ export function defaultConfig(sources) {
   }));
   return {
     sources: [...detected, ...starters],
-    injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
+    injection: { mode: "statusline", refresh: 30, maxVisible: 20 },
     snippets: {
       deduplication: true,
       cooldownAfterShown: 5,

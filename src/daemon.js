@@ -70,19 +70,12 @@ export function mergeSnippets(oldSnippets, newSnippets, config) {
   const oldList = Array.isArray(oldSnippets) ? oldSnippets : [];
   const newList = Array.isArray(newSnippets) ? newSnippets : [];
 
-  // Index prior shownCounts by snippet text so we can carry them forward.
-  const shownByText = new Map();
-  for (const s of oldList) {
-    if (s && typeof s.text === "string" && !shownByText.has(s.text)) {
-      shownByText.set(s.text, s.shownCount || 0);
-    }
-  }
-
-  // Copy each new snippet, preserving any prior shownCount for the same text.
-  let merged = newList.map((s) => ({
-    ...s,
-    shownCount: shownByText.has(s.text) ? shownByText.get(s.text) : s.shownCount || 0,
-  }));
+  // Fresh snippets (from a re-polled source) always start at shownCount 0.
+  // Non-due sources contribute snippets already read from the cache, so they
+  // already carry the correct shownCount — no inheritance needed. Inheriting
+  // by text match was a bug: same-text data after a fresh poll (e.g. unchanged
+  // weather) would inherit a retired shownCount and be immediately suppressed.
+  let merged = newList.map((s) => ({ ...s, shownCount: s.shownCount || 0 }));
 
   // Optional dedup by text, keeping the first occurrence.
   if (config?.snippets?.deduplication) {

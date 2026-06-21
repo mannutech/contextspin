@@ -129,15 +129,39 @@ export const STARTER_SOURCES = [
     format: "😄 {{text}}",
     label: "joke",
     cooldown: 1800,
-    maxSnippets: 1,
+    maxSnippets: 3,
   },
   {
     type: "http",
-    url: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=1",
-    jq: ".hits[0].title",
-    format: "📰 HN: {{value}}",
+    url: "https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=3",
+    jq: ".hits",
+    format: "📰 HN: {{title}}",
     label: "hackernews",
     cooldown: 600,
+    maxSnippets: 3,
+  },
+  {
+    type: "http",
+    url: "https://huggingface.co/api/daily_papers",
+    format: "🤗 AI: {{title}}",
+    label: "ai-papers",
+    cooldown: 3600,
+    maxSnippets: 3,
+  },
+  {
+    type: "http",
+    url: "https://dev.to/api/articles?top=1&per_page=3",
+    format: "📝 Dev.to: {{title}}",
+    label: "devto",
+    cooldown: 3600,
+    maxSnippets: 3,
+  },
+  {
+    type: "http",
+    url: "https://zenquotes.io/api/today",
+    format: "💬 {{q}} — {{a}}",
+    label: "quote",
+    cooldown: 86400,
     maxSnippets: 1,
   },
 ];
@@ -145,7 +169,7 @@ export const STARTER_SOURCES = [
 /** Default top-level config sections. */
 export const DEFAULTS = {
   injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
-  snippets: { deduplication: true, cooldownAfterShown: 3, priorityOrder: [] },
+  snippets: { deduplication: true, cooldownAfterShown: 5, priorityOrder: [] },
 };
 
 /**
@@ -252,7 +276,7 @@ export function defaultConfig(sources) {
     injection: { mode: "statusline", refresh: 30, maxVisible: 5 },
     snippets: {
       deduplication: true,
-      cooldownAfterShown: 3,
+      cooldownAfterShown: 5,
       priorityOrder: [
         "review",
         "incident",
@@ -265,6 +289,9 @@ export function defaultConfig(sources) {
         "weather",
         "joke",
         "hackernews",
+        "ai-papers",
+        "devto",
+        "quote",
       ],
     },
   };

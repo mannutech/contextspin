@@ -16,13 +16,16 @@ function snip(text, source, fetchedAt, shownCount = 0) {
   return { text, source, sourceId: 0, fetchedAt, shownCount };
 }
 
-test('mergeSnippets preserves shownCount from old snippets by matching text', () => {
+test('mergeSnippets does NOT inherit shownCount from old snippets — fresh polls always reset to 0', () => {
   const old = [snip('CI failing: build', 'CI', '2026-06-17T10:00:00.000Z', 4)];
   const fresh = [snip('CI failing: build', 'CI', '2026-06-17T11:00:00.000Z', 0)];
   const out = mergeSnippets(old, fresh, cfg());
   assert.equal(out.length, 1);
   assert.equal(out[0].text, 'CI failing: build');
-  assert.equal(out[0].shownCount, 4);
+  // A freshly-polled snippet must start at 0 even if the text is the same as
+  // a retired old snippet — otherwise unchanged data (same weather, same CI
+  // message) would be suppressed forever after being shown N times.
+  assert.equal(out[0].shownCount, 0);
 });
 
 test('mergeSnippets dedups by text keeping the first when enabled', () => {

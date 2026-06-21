@@ -26,7 +26,7 @@ test('DEFAULTS and SOURCE_DEFAULTS expose the documented shape', () => {
   assert.equal(DEFAULTS.injection.refresh, 30);
   assert.equal(DEFAULTS.injection.maxVisible, 5);
   assert.equal(DEFAULTS.snippets.deduplication, true);
-  assert.equal(DEFAULTS.snippets.cooldownAfterShown, 3);
+  assert.equal(DEFAULTS.snippets.cooldownAfterShown, 5);
   assert.deepEqual(DEFAULTS.snippets.priorityOrder, []);
   assert.equal(SOURCE_DEFAULTS.cooldown, 300);
   assert.equal(SOURCE_DEFAULTS.maxSnippets, 2);
@@ -42,11 +42,11 @@ test('defaultConfig returns the documented shape', () => {
   assert.equal(cfg.sources[0], sources[0]);
   assert.deepEqual(
     cfg.sources.map((s) => s.label),
-    ['X', 'weather', 'joke', 'hackernews'],
+    ['X', 'weather', 'joke', 'hackernews', 'ai-papers', 'devto', 'quote'],
   );
   assert.deepEqual(cfg.injection, { mode: 'statusline', refresh: 30, maxVisible: 5 });
   assert.equal(cfg.snippets.deduplication, true);
-  assert.equal(cfg.snippets.cooldownAfterShown, 3);
+  assert.equal(cfg.snippets.cooldownAfterShown, 5);
   assert.deepEqual(cfg.snippets.priorityOrder, [
     'review',
     'incident',
@@ -59,6 +59,9 @@ test('defaultConfig returns the documented shape', () => {
     'weather',
     'joke',
     'hackernews',
+    'ai-papers',
+    'devto',
+    'quote',
   ]);
 });
 
@@ -66,11 +69,11 @@ test('defaultConfig tolerates a non-array sources argument', () => {
   // With no detected sources, the config still seeds the starter pack.
   assert.deepEqual(
     defaultConfig(undefined).sources.map((s) => s.label),
-    ['weather', 'joke', 'hackernews'],
+    ['weather', 'joke', 'hackernews', 'ai-papers', 'devto', 'quote'],
   );
   assert.deepEqual(
     defaultConfig(null).sources.map((s) => s.label),
-    ['weather', 'joke', 'hackernews'],
+    ['weather', 'joke', 'hackernews', 'ai-papers', 'devto', 'quote'],
   );
 });
 
@@ -89,7 +92,7 @@ test('normalizeConfig fills injection/snippet defaults', () => {
   assert.equal(out.injection.refresh, 30);
   assert.equal(out.injection.maxVisible, 5);
   assert.equal(out.snippets.deduplication, true);
-  assert.equal(out.snippets.cooldownAfterShown, 3);
+  assert.equal(out.snippets.cooldownAfterShown, 5);
 });
 
 test('normalizeConfig assigns source.id as the index and applies source defaults', () => {

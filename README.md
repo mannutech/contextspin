@@ -1,6 +1,6 @@
 # ContextSpin
 
-Live context in your Claude Code **status bar** — weather, the top Hacker News story, PRs awaiting your review, CI failures, incidents, meetings — pulled from tools you already run. One-line install, and the bar is never empty.
+Live context in your Claude Code **status bar** — weather, the top Hacker News stories, fresh AI research papers, dev articles, PRs awaiting your review, CI failures, incidents, meetings — pulled from tools you already run. One-line install, and the bar is never empty.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
@@ -50,7 +50,7 @@ This is *stale-while-revalidate*: the bar is always fast, freshness catches up i
 curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
 ```
 
-This wires a SessionStart hook into `~/.claude/settings.json` (so it self-heals each session), seeds a no-credentials starter pack (weather, a dad joke, the top HN story), and wires your status bar **non-destructively** (any existing status line is preserved and composed above ours). Restart Claude Code to see it.
+This wires a SessionStart hook into `~/.claude/settings.json` (so it self-heals each session), seeds a no-credentials starter pack (weather, a dad joke, top HN stories, AI research papers, dev articles, a daily quote), and wires your status bar **non-destructively** (any existing status line is preserved and composed above ours). Restart Claude Code to see it.
 
 `npx contextspin install` does the same. `npx contextspin uninstall` removes everything. `npx contextspin status` shows the current snippets.
 

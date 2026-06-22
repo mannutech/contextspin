@@ -2,17 +2,23 @@
 
 Live context in your Claude Code **status bar** — weather, the top Hacker News stories, fresh AI research papers, dev articles, PRs awaiting your review, CI failures, incidents, meetings — pulled from tools you already run. One-line install, and the bar is never empty.
 
+![ContextSpin composing live GitLab merge requests beneath your own statusline](screenshots/statusline.svg)
+
+*Your existing statusline stays on top; the ContextSpin line is composed beneath it — never replacing it.*
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mannutech/contextspin/main/install.sh | bash
 ```
 
 Requires Node.js ≥ 18. MIT licensed. The only runtime dependency is [`commander`](https://www.npmjs.com/package/commander).
 
-![Install](screenshots/install.svg)
+![The curl one-line install](screenshots/install.svg)
 
-![Status command](screenshots/status-command.svg)
+![contextspin status listing cached snippets](screenshots/status-command.svg)
 
-![Statusline](screenshots/statusline.svg)
+The bar is **never empty** — before you've wired anything (or when every source is quiet), it rotates through a built-in joke and onboarding hints:
+
+![A joke keeping the status bar alive](screenshots/statusline-joke.svg)
 
 ## It does NOT fetch data
 

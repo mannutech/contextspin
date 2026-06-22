@@ -1,39 +1,21 @@
-<svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono', 'Fira Code', 'Menlo', monospace">
-  <!-- Terminal window -->
-  <rect width="680" height="220" rx="10" fill="#1a1a1a" stroke="#333" stroke-width="1"/>
+<svg viewBox="0 0 820 226" xmlns="http://www.w3.org/2000/svg" font-family="'JetBrains Mono','Fira Code','Menlo',monospace" role="img"><title>contextspin status listing the cached snippets</title>
+  <rect width="820" height="226" rx="10" fill="#faf9f5" stroke="#e4e1d8" stroke-width="1"/>
+  <rect width="820" height="34" rx="10" fill="#f1efe8"/>
+  <rect y="24" width="820" height="10" fill="#f1efe8"/>
+  <circle cx="20" cy="17" r="5.5" fill="#ec6a5e"/>
+  <circle cx="39" cy="17" r="5.5" fill="#f4bf4f"/>
+  <circle cx="58" cy="17" r="5.5" fill="#61c554"/>
+  <text x="410" y="21" text-anchor="middle" fill="#a8a096" font-size="11.5">zsh — ~</text>
 
-  <!-- Title bar -->
-  <rect width="680" height="36" rx="10" fill="#252525"/>
-  <rect y="26" width="680" height="10" fill="#252525"/>
-  <circle cx="20" cy="18" r="6" fill="#ff5f57"/>
-  <circle cx="40" cy="18" r="6" fill="#febc2e"/>
-  <circle cx="60" cy="18" r="6" fill="#28c840"/>
-  <text x="340" y="23" text-anchor="middle" fill="#888" font-size="12">zsh — ~</text>
+  <text x="20" y="64" font-size="13"><tspan fill="#3f8c82">~</tspan><tspan fill="#a8a096"> $ </tspan><tspan fill="#3a3a38">npx contextspin status</tspan></text>
 
-  <!-- Prompt + command -->
-  <text x="20" y="65" fill="#22d3ee" font-size="13">~</text>
-  <text x="37" y="65" fill="#888" font-size="13"> $ </text>
-  <text x="67" y="65" fill="#e5e5e5" font-size="13">npx contextspin status</text>
+  <text x="20" y="90" fill="#9a9286" font-size="12">Engine: daemonless · 4 sources · last refresh 4m ago</text>
 
-  <!-- Output line 1: engine info -->
-  <text x="20" y="91" fill="#a3a3a3" font-size="12">Engine: daemonless · 3 sources · last refresh 4m ago</text>
+  <text x="20" y="116" font-size="13"><tspan fill="#2a9d8f">•</tspan><tspan fill="#3a3a38">  🗂️ 5 open MRs · 1 to review · 12 repos</tspan></text>
+  <text x="20" y="140" font-size="13"><tspan fill="#2a9d8f">•</tspan><tspan fill="#3a3a38">  🌤️ Dubai, AE: ☀️ +33°C</tspan></text>
+  <text x="20" y="164" font-size="13"><tspan fill="#2a9d8f">•</tspan><tspan fill="#3a3a38">  🤗 AI: Context-Aware RL for Agentic and Multimodal LLMs</tspan></text>
+  <text x="20" y="188" font-size="13"><tspan fill="#2a9d8f">•</tspan><tspan fill="#3a3a38">  📰 HN: Swiss parliament lifts ban on new nuclear power plants</tspan></text>
 
-  <!-- Blank line spacing -->
-
-  <!-- Snippet 1: weather -->
-  <text x="20" y="117" fill="#6ee7b7" font-size="13">•</text>
-  <text x="34" y="117" fill="#e5e5e5" font-size="13">🌤️ Dubai, AE: ☀️ +33°C</text>
-
-  <!-- Snippet 2: joke -->
-  <text x="20" y="141" fill="#6ee7b7" font-size="13">•</text>
-  <text x="34" y="141" fill="#e5e5e5" font-size="13">😄 Why do programmers prefer dark mode? Because light attracts bugs.</text>
-
-  <!-- Snippet 3: HN -->
-  <text x="20" y="165" fill="#6ee7b7" font-size="13">•</text>
-  <text x="34" y="165" fill="#e5e5e5" font-size="13">📰 HN: Swiss parliament lifts ban on new nuclear power plants</text>
-
-  <!-- Next prompt -->
-  <text x="20" y="199" fill="#22d3ee" font-size="13">~</text>
-  <text x="37" y="199" fill="#888" font-size="13"> $ </text>
-  <rect x="67" y="188" width="8" height="14" fill="#e5e5e5" opacity="0.7"/>
+  <text x="20" y="216" font-size="13"><tspan fill="#3f8c82">~</tspan><tspan fill="#a8a096"> $ </tspan></text>
+  <rect x="46" y="205" width="8" height="14" rx="1" fill="#3a3a38" opacity="0.75"/>
 </svg>
